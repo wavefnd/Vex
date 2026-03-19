@@ -6,4 +6,3 @@ edition = "2021"
 [dependencies]
 wson_rs = "0.2.5"
 colorex = "0.1.1"
-wavec = { git = "https://github.com/LunaStev/Wave", branch = "master" }

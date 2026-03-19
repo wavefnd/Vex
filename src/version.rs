@@ -1,5 +1,4 @@
 use colorex::Colorize;
-use wavec::version;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

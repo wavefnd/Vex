@@ -1,7 +1,7 @@
 use wson_rs::{loads};
 use std::fs;
 use std::path::Path;
-use wavec::compile_and_run;
+use std::process::Command;
 
 pub fn run() {
     let vex_ws = fs::read_to_string("vex.ws").expect("vex.ws not found");
@@ -29,7 +29,20 @@ pub fn run() {
 
             if let Some(main_path) = main_file {
                 println!("Running {main_path}...");
-                compile_and_run(main_path.as_ref());
+
+                let status = Command::new("wavec")
+                    .arg("run")
+                    .arg(&main_path)
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => (),
+                    Ok(_) => println!("wavec not found."),
+                    Err(_) => {
+                        println!("wavec not found.");
+                        println!("Run `vex setup wavec` to install the compiler.");
+                    }
+                }
             } else {
                 println!("No file with `fn main()` found in src/");
             }
