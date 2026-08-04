@@ -1,48 +1,51 @@
-use wson_rs::{loads, WsonValue};
-use std::fs;
+use crate::manifest::{DependencySource, Manifest};
 
 pub fn info() {
-    let vex_ws = fs::read_to_string("vex.ws");
+    match Manifest::load() {
+        Ok(manifest) => {
+            println!("Vex project info");
+            println!("name: {}", manifest.name);
+            println!("version: {}", manifest.version);
+            println!("type: {}", if manifest.lib { "library" } else { "binary" });
+            println!("manifest: {}", manifest.source_path.to_string_lossy());
+            if let Some(description) = manifest.description.as_ref() {
+                println!("description: {description}");
+            }
+            if let Some(author) = manifest.author.as_ref() {
+                println!("author: {author}");
+            }
+            if let Some(license) = manifest.license.as_ref() {
+                println!("license: {license}");
+            }
+            println!("dependencies: {}", manifest.dependencies.len());
 
-    match vex_ws {
-        Ok(raw) => match loads(&raw) {
-            Ok(data) => {
-                println!("📦 Vex Project Info");
-
-                if let Some(WsonValue::String(name)) = data.get("name") {
-                    println!("• Name: {}", name);
-                }
-                if let Some(WsonValue::Version(version)) = data.get("version") {
-                    let ver = version.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(".");
-                    println!("• Version: {}", ver);
-                }
-                if let Some(WsonValue::Bool(lib)) = data.get("lib") {
-                    println!("• Type: {}", if *lib { "Library" } else { "Binary" });
-                }
-
-                if let Some(WsonValue::Array(deps)) = data.get("dependencies") {
-                    println!("• Dependencies: {}", deps.len());
-                    for dep in deps {
-                        if let WsonValue::Object(map) = dep {
-                            let name = match map.get("name") {
-                                Some(WsonValue::String(n)) => n.clone(),
-                                _ => "<unnamed>".to_string(),
-                            };
-                            let version = match map.get("version") {
-                                Some(WsonValue::Version(v)) => {
-                                    v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".")
-                                }
-                                _ => "?".to_string(),
-                            };
-                            println!("    - {} v{}", name, version);
+            for dep in manifest.dependencies {
+                match dep.source {
+                    DependencySource::Path { path } => match dep.version {
+                        Some(version) => println!("  {} {} path {}", dep.name, version, path),
+                        None => println!("  {} path {}", dep.name, path),
+                    },
+                    DependencySource::Git {
+                        url,
+                        branch,
+                        tag,
+                        rev,
+                    } => {
+                        let reference = branch
+                            .map(|value| format!(" branch {value}"))
+                            .or_else(|| tag.map(|value| format!(" tag {value}")))
+                            .or_else(|| rev.map(|value| format!(" rev {value}")))
+                            .unwrap_or_default();
+                        match dep.version {
+                            Some(version) => {
+                                println!("  {} {} git {}{}", dep.name, version, url, reference)
+                            }
+                            None => println!("  {} git {}{}", dep.name, url, reference),
                         }
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("❌ Failed to parse vex.ws: {e}");
-            }
-        },
-        Err(_) => eprintln!("❌ Cannot read vex.ws (file not found?)"),
+        }
+        Err(err) => eprintln!("error: {err}"),
     }
 }
