@@ -4,16 +4,22 @@ use std::path::{Path, PathBuf};
 use crate::lockfile::write_lockfile;
 use crate::manifest::Manifest;
 use crate::validate::{collect_inputs, validate_build_invocation, BuildValidationRequest};
-use crate::wavec::{
-    build_dependency_global_args, contains_dry_run_flag, run_build_with_dry_run,
-    split_global_and_build_args,
-};
+use crate::wavec::{build_dependency_global_args, run_build_with_dry_run};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildMode {
     Build,
     Run,
     Check,
+}
+
+#[derive(Debug, Default)]
+struct VexBuildOptions {
+    target: Option<String>,
+    release: bool,
+    dry_run: bool,
+    run_args: Vec<String>,
+    run_separator_seen: bool,
 }
 
 pub fn build(mode: BuildMode, args: &[String]) {
@@ -25,59 +31,124 @@ pub fn build(mode: BuildMode, args: &[String]) {
 
 fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
     let manifest = Manifest::load()?;
-    let split = split_global_and_build_args(args)?;
-    let user_global_args = split.global_args.clone();
-    let mut build_args = split.build_args.clone();
+    let options = parse_vex_build_options(mode, args)?;
+    let default_input = resolve_default_input(&manifest, mode)?;
 
+    let mut global_args = Vec::new();
+    if options.release {
+        global_args.push("-O2".to_string());
+    }
+    if let Some(target) = options.target.as_ref() {
+        global_args.push("--target".to_string());
+        global_args.push(target.clone());
+    }
+
+    let mut build_args = vec![default_input];
     match mode {
         BuildMode::Build => {}
         BuildMode::Run => build_args.push("--run".to_string()),
         BuildMode::Check => build_args.push("--emit=check".to_string()),
     }
-
-    let explicit_inputs = collect_inputs(&build_args);
-
-    if explicit_inputs.is_empty() {
-        let default_input = resolve_default_input(&manifest, mode)?;
-        build_args.insert(0, default_input);
+    if options.dry_run {
+        build_args.push("--dry-run".to_string());
     }
 
+    let inputs = collect_inputs(&build_args);
     validate_build_invocation(BuildValidationRequest {
-        inputs: &collect_inputs(&build_args),
+        inputs: &inputs,
         build_args: &build_args,
-        run_args: &split.run_args,
-        run_separator_seen: split.run_separator_seen,
-        global_args: &split.global_args,
+        run_args: &options.run_args,
+        run_separator_seen: options.run_separator_seen,
+        global_args: &global_args,
     })?;
 
-    let user_requested_dry_run = contains_dry_run_flag(&build_args);
-    if !user_requested_dry_run {
+    if !options.dry_run {
         fs::create_dir_all("target").map_err(|e| format!("failed to create target/: {e}"))?;
     }
 
-    let dependency_args = build_dependency_global_args(&manifest, !user_requested_dry_run)?;
-    if !user_requested_dry_run {
+    let dependency_args = build_dependency_global_args(&manifest, !options.dry_run)?;
+    if !options.dry_run {
         write_lockfile(&manifest)?;
     }
 
     let mut wavec_args = Vec::new();
     wavec_args.extend(dependency_args);
-    wavec_args.extend(user_global_args);
+    wavec_args.extend(global_args);
     wavec_args.push("build".to_string());
     wavec_args.extend(build_args);
 
-    if split.run_separator_seen {
+    if options.run_separator_seen {
         wavec_args.push("--".to_string());
-        wavec_args.extend(split.run_args);
+        wavec_args.extend(options.run_args);
     }
 
-    run_build_with_dry_run(&wavec_args, user_requested_dry_run)
+    run_build_with_dry_run(&wavec_args, options.dry_run)
+}
+
+fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildOptions, String> {
+    let mut options = VexBuildOptions::default();
+    let mut i = 0;
+
+    while i < args.len() {
+        let token = args[i].as_str();
+
+        if token == "--" {
+            options.run_separator_seen = true;
+            if mode != BuildMode::Run {
+                return Err(
+                    "runtime arguments after `--` are only valid with `vex run`".to_string()
+                );
+            }
+            options.run_args.extend_from_slice(&args[i + 1..]);
+            return Ok(options);
+        }
+
+        match token {
+            "--target" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing value for `--target`".to_string());
+                }
+                options.target = Some(args[i].clone());
+            }
+            "--release" => options.release = true,
+            "--dry-run" => options.dry_run = true,
+            "-h" | "--help" => return Err(build_usage(mode).to_string()),
+            _ if token.starts_with("--target=") => {
+                options.target = Some(token.trim_start_matches("--target=").to_string());
+            }
+            _ if token.starts_with('-') => {
+                return Err(format!(
+                    "unknown Vex option `{token}`. Vex does not accept raw wavec flags here"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "unexpected argument `{token}`. Vex builds the package described by vex.ws"
+                ));
+            }
+        }
+
+        i += 1;
+    }
+
+    Ok(options)
+}
+
+fn build_usage(mode: BuildMode) -> &'static str {
+    match mode {
+        BuildMode::Build => "usage: vex build [--target <triple>] [--release] [--dry-run]",
+        BuildMode::Run => {
+            "usage: vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]"
+        }
+        BuildMode::Check => "usage: vex check [--target <triple>] [--release] [--dry-run]",
+    }
 }
 
 fn resolve_default_input(manifest: &Manifest, mode: BuildMode) -> Result<String, String> {
     if mode == BuildMode::Run && manifest.lib {
         return Err(
-            "library manifest cannot be `vex run` default target. Pass an explicit .wave file."
+            "library manifest cannot be `vex run` default target. Add a binary target to vex.ws."
                 .to_string(),
         );
     }
@@ -146,4 +217,43 @@ fn find_wave_file_with_main(src_dir: &Path) -> Result<Option<PathBuf>, String> {
 
     candidates.sort();
     Ok(candidates.into_iter().next())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_small_vex_build_option_surface() {
+        let options = parse_vex_build_options(
+            BuildMode::Run,
+            &strings(&[
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--release",
+                "--",
+                "arg",
+            ]),
+        )
+        .expect("options must parse");
+
+        assert_eq!(options.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert!(options.release);
+        assert_eq!(options.run_args, strings(&["arg"]));
+    }
+
+    #[test]
+    fn rejects_raw_wavec_flags_and_source_inputs() {
+        let err = parse_vex_build_options(BuildMode::Build, &strings(&["--emit=obj"]))
+            .expect_err("raw wavec flags are not Vex build options");
+        assert!(err.contains("raw wavec flags"), "{err}");
+
+        let err = parse_vex_build_options(BuildMode::Run, &strings(&["src/main.wave"]))
+            .expect_err("Vex run is manifest-based");
+        assert!(err.contains("vex.ws"), "{err}");
+    }
 }

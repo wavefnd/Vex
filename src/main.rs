@@ -76,9 +76,9 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  vex init [--lib]");
-    println!("  vex build [wavec-build-options...]");
-    println!("  vex run [wavec-build-options...] [-- <run-args...>]");
-    println!("  vex check [wavec-build-options...]");
+    println!("  vex build [--target <triple>] [--release] [--dry-run]");
+    println!("  vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]");
+    println!("  vex check [--target <triple>] [--release] [--dry-run]");
     println!("  vex info");
     println!("  vex setup wavec [--version <version>]");
     println!("  vex --version");

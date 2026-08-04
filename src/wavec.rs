@@ -8,47 +8,6 @@ use serde_json::Value;
 
 use crate::manifest::{Dependency, DependencySource, Manifest, MANIFEST_FILE};
 
-#[derive(Debug, Clone)]
-pub struct SplitBuildArgs {
-    pub global_args: Vec<String>,
-    pub build_args: Vec<String>,
-    pub run_args: Vec<String>,
-    pub run_separator_seen: bool,
-}
-
-pub fn split_global_and_build_args(args: &[String]) -> Result<SplitBuildArgs, String> {
-    let mut global_args = Vec::new();
-    let mut build_args = Vec::new();
-    let mut run_args = Vec::new();
-    let mut run_separator_seen = false;
-
-    let mut i = 0;
-    while i < args.len() {
-        let token = args[i].as_str();
-
-        if token == "--" {
-            run_separator_seen = true;
-            run_args.extend_from_slice(&args[i + 1..]);
-            break;
-        }
-
-        if let Some(consumed) = parse_global_option(args, i, &mut global_args)? {
-            i += consumed;
-            continue;
-        }
-
-        build_args.push(args[i].clone());
-        i += 1;
-    }
-
-    Ok(SplitBuildArgs {
-        global_args,
-        build_args,
-        run_args,
-        run_separator_seen,
-    })
-}
-
 pub fn build_dependency_global_args(
     manifest: &Manifest,
     ensure_dirs: bool,
@@ -78,7 +37,6 @@ pub fn build_dependency_global_args(
 }
 
 pub fn run_build_with_dry_run(args: &[String], user_requested_dry_run: bool) -> Result<(), String> {
-    let program = wavec_program();
     let mut dry_run_args = args.to_vec();
 
     if !contains_dry_run_flag(&dry_run_args) {
@@ -86,40 +44,29 @@ pub fn run_build_with_dry_run(args: &[String], user_requested_dry_run: bool) -> 
     }
     insert_build_flag(&mut dry_run_args, "--error-format=json");
 
-    let plan_output = Command::new(&program)
-        .args(&dry_run_args)
-        .output()
-        .map_err(|e| {
-            format!(
-                "failed to execute `{program}` dry-run: {e}. install compiler with `vex setup wavec` or set VEX_WAVEC"
-            )
-        })?;
-
-    if !plan_output.status.success() {
-        return Err(format!(
-            "wavec dry-run failed [{}]: {}",
-            classify_exit(plan_output.status),
-            combined_output(&plan_output.stdout, &plan_output.stderr)
-        ));
-    }
-
-    validate_dry_run_json_output(&plan_output.stdout, &plan_output.stderr)?;
+    let (candidate, validation_output) = select_compatible_wavec(&dry_run_args)?;
+    validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr)?;
 
     if !user_requested_dry_run {
-        let status = Command::new(&program)
+        let status = Command::new(&candidate.path)
             .args(args)
             .status()
-            .map_err(|e| format!("failed to execute `{program} build`: {e}"))?;
+            .map_err(|e| format!("failed to execute `{}` build: {e}", candidate.display()))?;
         if !status.success() {
             return Err(format!("wavec build failed [{}]", classify_exit(status)));
         }
         return Ok(());
     }
 
-    let status = Command::new(&program)
+    let status = Command::new(&candidate.path)
         .args(args)
         .status()
-        .map_err(|e| format!("failed to execute `{program} build --dry-run`: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "failed to execute `{}` build --dry-run: {e}",
+                candidate.display()
+            )
+        })?;
     if !status.success() {
         return Err(format!(
             "wavec build dry-run failed [{}]",
@@ -140,63 +87,6 @@ pub fn contains_dry_run_flag(args: &[String]) -> bool {
         }
     }
     false
-}
-
-fn parse_global_option(
-    args: &[String],
-    index: usize,
-    output: &mut Vec<String>,
-) -> Result<Option<usize>, String> {
-    let token = args[index].as_str();
-
-    if matches!(
-        token,
-        "-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Oz" | "-Ofast" | "--llvm"
-    ) {
-        output.push(token.to_string());
-        return Ok(Some(1));
-    }
-
-    if token.starts_with("--debug-wave=")
-        || token.starts_with("--link=")
-        || token.starts_with("--dep-root=")
-        || token.starts_with("--dep=")
-        || token.starts_with("--target=")
-        || token.starts_with("--cpu=")
-        || token.starts_with("--features=")
-        || token.starts_with("--abi=")
-        || token.starts_with("--sysroot=")
-        || token.starts_with("-Lnative=")
-        || (token.starts_with("-C") && token != "-C")
-        || (token.starts_with("-L") && token != "-L")
-    {
-        output.push(token.to_string());
-        return Ok(Some(1));
-    }
-
-    if matches!(
-        token,
-        "--debug-wave"
-            | "--link"
-            | "--dep-root"
-            | "--dep"
-            | "--target"
-            | "--cpu"
-            | "--features"
-            | "--abi"
-            | "--sysroot"
-            | "-L"
-            | "-C"
-    ) {
-        if index + 1 >= args.len() {
-            return Err(format!("missing value for global option `{token}`"));
-        }
-        output.push(token.to_string());
-        output.push(args[index + 1].clone());
-        return Ok(Some(2));
-    }
-
-    Ok(None)
 }
 
 fn resolve_dependency(
@@ -496,20 +386,245 @@ fn resolve_dependency_path(dep_path: &str, manifest_path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-fn wavec_program() -> String {
-    env::var("VEX_WAVEC")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "wavec".to_string())
+#[derive(Debug, Clone)]
+struct WavecCandidate {
+    path: PathBuf,
+    source: &'static str,
+    explicit: bool,
+}
+
+impl WavecCandidate {
+    fn display(&self) -> String {
+        format!("{} ({})", self.path.to_string_lossy(), self.source)
+    }
+}
+
+struct DryRunOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn select_compatible_wavec(
+    dry_run_args: &[String],
+) -> Result<(WavecCandidate, DryRunOutput), String> {
+    let candidates = wavec_candidates();
+    let mut failures = Vec::new();
+
+    for candidate in candidates {
+        let output = match Command::new(&candidate.path).args(dry_run_args).output() {
+            Ok(output) => output,
+            Err(err) => {
+                let message = format!("{}: failed to execute: {err}", candidate.display());
+                if candidate.explicit {
+                    return Err(format!("explicit VEX_WAVEC is not usable. {message}"));
+                }
+                failures.push(message);
+                continue;
+            }
+        };
+
+        if !output.status.success() {
+            let text = combined_output(&output.stdout, &output.stderr);
+            if looks_like_incompatible_wavec(&text) {
+                let message = format!(
+                    "{}: incompatible wavec [{}]: {}",
+                    candidate.display(),
+                    classify_exit(output.status),
+                    text
+                );
+                if candidate.explicit {
+                    return Err(message);
+                }
+                failures.push(message);
+                continue;
+            }
+
+            return Err(format!(
+                "wavec dry-run failed using {} [{}]: {}",
+                candidate.display(),
+                classify_exit(output.status),
+                text
+            ));
+        }
+
+        if let Err(err) = validate_dry_run_json_output(&output.stdout, &output.stderr) {
+            let message = format!(
+                "{}: incompatible dry-run contract: {err}",
+                candidate.display()
+            );
+            if candidate.explicit {
+                return Err(message);
+            }
+            failures.push(message);
+            continue;
+        }
+
+        return Ok((
+            candidate,
+            DryRunOutput {
+                stdout: output.stdout,
+                stderr: output.stderr,
+            },
+        ));
+    }
+
+    let mut message = String::from(
+        "no compatible wavec found. Vex requires `wavec build --dry-run --error-format=json` schema_version 1",
+    );
+    if !failures.is_empty() {
+        message.push_str("\ntried:");
+        for failure in failures {
+            message.push_str("\n  - ");
+            message.push_str(&failure);
+        }
+    }
+    message.push_str("\nhelp: install the current Wave compiler or set VEX_WAVEC=/path/to/wavec");
+    Err(message)
+}
+
+fn wavec_candidates() -> Vec<WavecCandidate> {
+    if let Some(explicit) = env::var_os("VEX_WAVEC").filter(|value| !value.is_empty()) {
+        return vec![WavecCandidate {
+            path: PathBuf::from(explicit),
+            source: "VEX_WAVEC",
+            explicit: true,
+        }];
+    }
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    let exe_name = wavec_executable_name();
+
+    if let Ok(current_exe) = env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            push_candidate(
+                &mut candidates,
+                &mut seen,
+                dir.join(exe_name),
+                "next to vex",
+                false,
+            );
+        }
+
+        for ancestor in current_exe.ancestors() {
+            push_candidate(
+                &mut candidates,
+                &mut seen,
+                ancestor
+                    .join("Wave")
+                    .join("target")
+                    .join("debug")
+                    .join(exe_name),
+                "workspace Wave debug build",
+                false,
+            );
+            push_candidate(
+                &mut candidates,
+                &mut seen,
+                ancestor
+                    .join("Wave")
+                    .join("target")
+                    .join("release")
+                    .join(exe_name),
+                "workspace Wave release build",
+                false,
+            );
+        }
+    }
+
+    if let Some(wave_home) = env::var_os("WAVE_HOME") {
+        push_candidate(
+            &mut candidates,
+            &mut seen,
+            PathBuf::from(wave_home).join("bin").join(exe_name),
+            "WAVE_HOME",
+            false,
+        );
+    }
+
+    if let Some(home) = home_dir() {
+        push_candidate(
+            &mut candidates,
+            &mut seen,
+            home.join(".wave").join("bin").join(exe_name),
+            "home wave install",
+            false,
+        );
+    }
+
+    if let Some(paths) = env::var_os("PATH") {
+        for dir in env::split_paths(&paths) {
+            push_candidate(
+                &mut candidates,
+                &mut seen,
+                dir.join(exe_name),
+                "PATH",
+                false,
+            );
+        }
+    }
+
+    if candidates.is_empty() {
+        candidates.push(WavecCandidate {
+            path: PathBuf::from(exe_name),
+            source: "PATH",
+            explicit: false,
+        });
+    }
+
+    candidates
+}
+
+fn push_candidate(
+    candidates: &mut Vec<WavecCandidate>,
+    seen: &mut HashSet<String>,
+    path: PathBuf,
+    source: &'static str,
+    explicit: bool,
+) {
+    if !path.is_file() {
+        return;
+    }
+
+    let key = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.clone())
+        .to_string_lossy()
+        .to_string();
+    if !seen.insert(key) {
+        return;
+    }
+
+    candidates.push(WavecCandidate {
+        path,
+        source,
+        explicit,
+    });
+}
+
+fn looks_like_incompatible_wavec(output: &str) -> bool {
+    output.contains("unknown option for build: --dry-run")
+        || output.contains("unknown option") && output.contains("--dry-run")
+        || output.contains("unknown option") && output.contains("--error-format")
+}
+
+fn wavec_executable_name() -> &'static str {
+    if cfg!(windows) {
+        "wavec.exe"
+    } else {
+        "wavec"
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
 
     fn valid_plan() -> &'static str {
         r#"{
@@ -526,35 +641,6 @@ mod tests {
             "link": {"output":"target/main","inputs":["target/main.o"],"program":"ld.lld","args":["target/main.o"]},
             "execute": null
         }"#
-    }
-
-    #[test]
-    fn split_preserves_wavec_global_build_and_run_args() {
-        let split = split_global_and_build_args(&strings(&[
-            "--target",
-            "x86_64-unknown-none-elf",
-            "-C",
-            "relocation-model=static",
-            "src/main.wave",
-            "--emit=bin",
-            "--",
-            "one",
-            "--flag",
-        ]))
-        .expect("split must succeed");
-
-        assert_eq!(
-            split.global_args,
-            strings(&[
-                "--target",
-                "x86_64-unknown-none-elf",
-                "-C",
-                "relocation-model=static"
-            ])
-        );
-        assert_eq!(split.build_args, strings(&["src/main.wave", "--emit=bin"]));
-        assert_eq!(split.run_args, strings(&["one", "--flag"]));
-        assert!(split.run_separator_seen);
     }
 
     #[test]

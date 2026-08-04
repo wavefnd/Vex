@@ -16,9 +16,9 @@ Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
 
 ```sh
 vex init [--lib]
-vex build [wavec-build-options...]
-vex run [wavec-build-options...] [-- <args...>]
-vex check [wavec-build-options...]
+vex build [--target <triple>] [--release] [--dry-run]
+vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]
+vex check [--target <triple>] [--release] [--dry-run]
 vex info
 vex setup wavec [--version <version>]
 vex --version
@@ -86,15 +86,15 @@ Fetched Git dependencies are stored under `.vex/deps/<name>`. Every fetched depe
 
 ## Build Model
 
-Vex calls `wavec build` directly and validates the compiler dry-run plan before executing a real build. This keeps Vex strict enough for package management while leaving low-level compiler controls in `wavec`.
+Vex uses `wavec` internally and validates the compiler dry-run plan before executing a real build. Vex commands stay manifest-based; raw compiler flags belong to `wavec`, not to Vex.
 
 Examples:
 
 ```sh
-vex build --target x86_64-unknown-linux-gnu --emit=bin
+vex build --target x86_64-unknown-linux-gnu
 vex run -- arg1 arg2
 vex check
-VEX_WAVEC=/opt/wave/bin/wavec vex build --dry-run --error-format=json
+VEX_WAVEC=/opt/wave/bin/wavec vex build --dry-run
 ```
 
 ## License
