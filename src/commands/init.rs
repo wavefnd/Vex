@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::lockfile::write_lockfile;
+use crate::lockfile::{write_lockfile, Lockfile};
 use crate::manifest::{render_new_manifest, Manifest, MANIFEST_FILE};
 
 pub fn init(is_lib: bool) {
@@ -53,8 +53,8 @@ fn run_init(is_lib: bool) -> Result<(), String> {
 
     fs::create_dir_all(".vex/deps").map_err(|e| format!("failed to create .vex/deps: {e}"))?;
 
-    let manifest = Manifest::load()?;
-    write_lockfile(&manifest)?;
+    let _manifest = Manifest::load()?;
+    write_lockfile(&Lockfile::empty())?;
 
     println!("initialized Wave project");
     println!("created {MANIFEST_FILE}, vex.lock, and src/{source_file}");

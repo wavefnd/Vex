@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use wson_rs::{loads, WsonValue};
 
@@ -40,15 +40,36 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn load() -> Result<Self, String> {
-        let source_path = PathBuf::from(MANIFEST_FILE);
-        if !source_path.exists() {
-            return Err(format!("manifest not found. expected `{MANIFEST_FILE}`"));
+        let source_path = Path::new(MANIFEST_FILE);
+        if !source_path.is_file() {
+            let directory = std::env::current_dir()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            return Err(format!(
+                "could not find `{MANIFEST_FILE}` in `{directory}`\nhelp: run `vex init` to create a package"
+            ));
+        }
+        Self::load_from(source_path)
+    }
+
+    pub fn load_from(source_path: impl AsRef<Path>) -> Result<Self, String> {
+        let source_path = source_path.as_ref().to_path_buf();
+        if !source_path.is_file() {
+            return Err(format!(
+                "manifest not found at `{}`",
+                source_path.to_string_lossy()
+            ));
         }
 
         let raw = fs::read_to_string(&source_path)
             .map_err(|e| format!("failed to read `{}`: {e}", source_path.to_string_lossy()))?;
 
-        parse_manifest(&raw, source_path)
+        parse_manifest(&raw, source_path.clone()).map_err(|err| {
+            format!(
+                "failed to load manifest `{}`: {err}",
+                source_path.to_string_lossy()
+            )
+        })
     }
 
     pub fn default_entry_path(&self) -> PathBuf {

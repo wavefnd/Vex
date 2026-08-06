@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use crate::lockfile::write_lockfile;
 use crate::manifest::Manifest;
+use crate::resolver::{resolve, ResolveOptions};
+use crate::ui;
 use crate::validate::{collect_inputs, validate_build_invocation, BuildValidationRequest};
-use crate::wavec::{build_dependency_global_args, run_build_with_dry_run};
+use crate::wavec::run_build_with_dry_run;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildMode {
@@ -30,6 +32,7 @@ pub fn build(mode: BuildMode, args: &[String]) {
 }
 
 fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
+    let started = Instant::now();
     let manifest = Manifest::load()?;
     let options = parse_vex_build_options(mode, args)?;
     let default_input = resolve_default_input(&manifest, mode)?;
@@ -66,13 +69,16 @@ fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
         fs::create_dir_all("target").map_err(|e| format!("failed to create target/: {e}"))?;
     }
 
-    let dependency_args = build_dependency_global_args(&manifest, !options.dry_run)?;
-    if !options.dry_run {
-        write_lockfile(&manifest)?;
-    }
+    let resolution = resolve(
+        &manifest,
+        ResolveOptions {
+            dry_run: options.dry_run,
+            update: false,
+        },
+    )?;
 
     let mut wavec_args = Vec::new();
-    wavec_args.extend(dependency_args);
+    wavec_args.extend(resolution.dependency_args());
     wavec_args.extend(global_args);
     wavec_args.push("build".to_string());
     wavec_args.extend(build_args);
@@ -82,7 +88,35 @@ fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
         wavec_args.extend(options.run_args);
     }
 
-    run_build_with_dry_run(&wavec_args, options.dry_run)
+    let package = format!("{} v{}", manifest.name, manifest.version);
+    if options.dry_run {
+        ui::status("Planning", &package);
+    } else {
+        ui::status(
+            match mode {
+                BuildMode::Check => "Checking",
+                BuildMode::Build | BuildMode::Run => "Compiling",
+            },
+            &package,
+        );
+        if mode == BuildMode::Run {
+            ui::status("Running", &manifest.name);
+        }
+    }
+
+    run_build_with_dry_run(&wavec_args, options.dry_run)?;
+
+    if !options.dry_run {
+        ui::status(
+            "Finished",
+            format!(
+                "{} profile in {:.2}s",
+                if options.release { "release" } else { "dev" },
+                started.elapsed().as_secs_f64()
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildOptions, String> {

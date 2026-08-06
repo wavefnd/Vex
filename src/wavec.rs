@@ -1,40 +1,8 @@
-use std::collections::HashSet;
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use serde_json::Value;
-
-use crate::manifest::{Dependency, DependencySource, Manifest, MANIFEST_FILE};
-
-pub fn build_dependency_global_args(
-    manifest: &Manifest,
-    ensure_dirs: bool,
-) -> Result<Vec<String>, String> {
-    let dep_root = Path::new(".vex/deps");
-    if ensure_dirs {
-        fs::create_dir_all(dep_root)
-            .map_err(|e| format!("failed to create `{}`: {e}", dep_root.display()))?;
-    }
-
-    let mut names = HashSet::new();
-    let mut args = vec![format!("--dep-root={}", dep_root.to_string_lossy())];
-
-    for dep in &manifest.dependencies {
-        if !names.insert(dep.name.clone()) {
-            return Err(format!(
-                "duplicate dependency name in manifest: `{}`",
-                dep.name
-            ));
-        }
-
-        let resolved = resolve_dependency(dep, &manifest.source_path, ensure_dirs)?;
-        args.push(format!("--dep={}={}", dep.name, resolved.to_string_lossy()));
-    }
-
-    Ok(args)
-}
 
 pub fn run_build_with_dry_run(args: &[String], user_requested_dry_run: bool) -> Result<(), String> {
     let mut dry_run_args = args.to_vec();
@@ -46,7 +14,13 @@ pub fn run_build_with_dry_run(args: &[String], user_requested_dry_run: bool) -> 
 
     let wavec = wavec_path();
     let validation_output = run_wavec_dry_run(&wavec, &dry_run_args)?;
-    validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr)?;
+    validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr).map_err(
+        |err| {
+            format!(
+                "installed wavec is incompatible with Vex: {err}\nhelp: update wavec or set VEX_WAVEC=/path/to/wavec"
+            )
+        },
+    )?;
 
     if !user_requested_dry_run {
         let status = Command::new(&wavec)
@@ -85,146 +59,6 @@ pub fn contains_dry_run_flag(args: &[String]) -> bool {
         }
     }
     false
-}
-
-fn resolve_dependency(
-    dependency: &Dependency,
-    manifest_path: &Path,
-    ensure_ready: bool,
-) -> Result<PathBuf, String> {
-    match &dependency.source {
-        DependencySource::Path { path } => {
-            let resolved = resolve_dependency_path(path, manifest_path);
-            if ensure_ready {
-                require_dependency_manifest(dependency, &resolved)?;
-            }
-            Ok(resolved)
-        }
-        DependencySource::Git { .. } => {
-            let resolved = Path::new(".vex/deps").join(&dependency.name);
-            if ensure_ready {
-                sync_git_dependency(dependency, &resolved)?;
-                require_dependency_manifest(dependency, &resolved)?;
-            }
-            Ok(resolved)
-        }
-    }
-}
-
-fn sync_git_dependency(dependency: &Dependency, destination: &Path) -> Result<(), String> {
-    let DependencySource::Git {
-        url,
-        branch,
-        tag,
-        rev,
-    } = &dependency.source
-    else {
-        return Ok(());
-    };
-
-    if destination.exists() {
-        if !destination.join(".git").is_dir() {
-            return Err(format!(
-                "managed dependency path `{}` exists but is not a git checkout",
-                destination.display()
-            ));
-        }
-
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["fetch", "--all", "--tags", "--prune"]),
-            "update git dependency",
-        )?;
-    } else {
-        let parent = destination
-            .parent()
-            .ok_or_else(|| format!("invalid dependency path `{}`", destination.display()))?;
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create `{}`: {e}", parent.display()))?;
-
-        let mut clone = Command::new("git");
-        clone.arg("clone");
-        if let Some(branch) = branch.as_ref().or(tag.as_ref()) {
-            clone.args(["--depth", "1", "--branch", branch]);
-        }
-        clone.arg(url).arg(destination);
-        run_git(&mut clone, "clone git dependency")?;
-    }
-
-    if let Some(branch) = branch {
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["checkout", branch]),
-            "checkout git dependency branch",
-        )?;
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["pull", "--ff-only"]),
-            "fast-forward git dependency branch",
-        )?;
-    } else if let Some(tag) = tag {
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["checkout", tag]),
-            "checkout git dependency tag",
-        )?;
-    } else if let Some(rev) = rev {
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["checkout", rev]),
-            "checkout git dependency revision",
-        )?;
-    } else if destination.exists() {
-        run_git(
-            Command::new("git")
-                .arg("-C")
-                .arg(destination)
-                .args(["pull", "--ff-only"]),
-            "fast-forward git dependency",
-        )?;
-    }
-
-    Ok(())
-}
-
-fn run_git(command: &mut Command, action: &str) -> Result<(), String> {
-    let output = command
-        .output()
-        .map_err(|e| format!("failed to start git for {action}: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "git failed during {action} [{}]: {}",
-        classify_exit(output.status),
-        combined_output(&output.stdout, &output.stderr)
-    ))
-}
-
-fn require_dependency_manifest(dependency: &Dependency, path: &Path) -> Result<(), String> {
-    let manifest = path.join(MANIFEST_FILE);
-    if manifest.is_file() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "dependency `{}` at `{}` must contain `{}`",
-        dependency.name,
-        path.display(),
-        MANIFEST_FILE
-    ))
 }
 
 fn validate_dry_run_json_output(stdout: &[u8], stderr: &[u8]) -> Result<(), String> {
@@ -367,21 +201,6 @@ fn classify_exit(status: ExitStatus) -> &'static str {
         Some(_) => "unknown failure code",
         None => "terminated by signal",
     }
-}
-
-fn resolve_dependency_path(dep_path: &str, manifest_path: &Path) -> PathBuf {
-    let candidate = PathBuf::from(dep_path);
-    let path = if candidate.is_absolute() {
-        candidate
-    } else {
-        let base_dir = manifest_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        base_dir.join(candidate)
-    };
-
-    path.canonicalize().unwrap_or(path)
 }
 
 struct DryRunOutput {
