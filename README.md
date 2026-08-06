@@ -10,7 +10,7 @@ Vex is designed to sit above `wavec` in the same way Cargo sits above `rustc`: V
 - `wavec` compatible with the `build --dry-run --error-format=json` schema v1 contract
 - `git` when using Git dependencies
 
-Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
+Vex runs `wavec` from `PATH` by default. Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
 
 ## Commands
 

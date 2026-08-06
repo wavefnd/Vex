@@ -44,29 +44,27 @@ pub fn run_build_with_dry_run(args: &[String], user_requested_dry_run: bool) -> 
     }
     insert_build_flag(&mut dry_run_args, "--error-format=json");
 
-    let (candidate, validation_output) = select_compatible_wavec(&dry_run_args)?;
+    let wavec = wavec_path();
+    let validation_output = run_wavec_dry_run(&wavec, &dry_run_args)?;
     validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr)?;
 
     if !user_requested_dry_run {
-        let status = Command::new(&candidate.path)
+        let status = Command::new(&wavec)
             .args(args)
             .status()
-            .map_err(|e| format!("failed to execute `{}` build: {e}", candidate.display()))?;
+            .map_err(|e| format!("failed to execute `{}` build: {e}", wavec.display()))?;
         if !status.success() {
             return Err(format!("wavec build failed [{}]", classify_exit(status)));
         }
         return Ok(());
     }
 
-    let status = Command::new(&candidate.path)
-        .args(args)
-        .status()
-        .map_err(|e| {
-            format!(
-                "failed to execute `{}` build --dry-run: {e}",
-                candidate.display()
-            )
-        })?;
+    let status = Command::new(&wavec).args(args).status().map_err(|e| {
+        format!(
+            "failed to execute `{}` build --dry-run: {e}",
+            wavec.display()
+        )
+    })?;
     if !status.success() {
         return Err(format!(
             "wavec build dry-run failed [{}]",
@@ -386,240 +384,42 @@ fn resolve_dependency_path(dep_path: &str, manifest_path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-#[derive(Debug, Clone)]
-struct WavecCandidate {
-    path: PathBuf,
-    source: &'static str,
-    explicit: bool,
-}
-
-impl WavecCandidate {
-    fn display(&self) -> String {
-        format!("{} ({})", self.path.to_string_lossy(), self.source)
-    }
-}
-
 struct DryRunOutput {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }
 
-fn select_compatible_wavec(
-    dry_run_args: &[String],
-) -> Result<(WavecCandidate, DryRunOutput), String> {
-    let candidates = wavec_candidates();
-    let mut failures = Vec::new();
+fn run_wavec_dry_run(wavec: &Path, dry_run_args: &[String]) -> Result<DryRunOutput, String> {
+    let output = Command::new(wavec)
+        .args(dry_run_args)
+        .output()
+        .map_err(|e| {
+            format!(
+                "failed to execute `{}`. Install wavec or set VEX_WAVEC=/path/to/wavec: {e}",
+                wavec.display()
+            )
+        })?;
 
-    for candidate in candidates {
-        let output = match Command::new(&candidate.path).args(dry_run_args).output() {
-            Ok(output) => output,
-            Err(err) => {
-                let message = format!("{}: failed to execute: {err}", candidate.display());
-                if candidate.explicit {
-                    return Err(format!("explicit VEX_WAVEC is not usable. {message}"));
-                }
-                failures.push(message);
-                continue;
-            }
-        };
-
-        if !output.status.success() {
-            let text = combined_output(&output.stdout, &output.stderr);
-            if looks_like_incompatible_wavec(&text) {
-                let message = format!(
-                    "{}: incompatible wavec [{}]: {}",
-                    candidate.display(),
-                    classify_exit(output.status),
-                    text
-                );
-                if candidate.explicit {
-                    return Err(message);
-                }
-                failures.push(message);
-                continue;
-            }
-
-            return Err(format!(
-                "wavec dry-run failed using {} [{}]: {}",
-                candidate.display(),
-                classify_exit(output.status),
-                text
-            ));
-        }
-
-        if let Err(err) = validate_dry_run_json_output(&output.stdout, &output.stderr) {
-            let message = format!(
-                "{}: incompatible dry-run contract: {err}",
-                candidate.display()
-            );
-            if candidate.explicit {
-                return Err(message);
-            }
-            failures.push(message);
-            continue;
-        }
-
-        return Ok((
-            candidate,
-            DryRunOutput {
-                stdout: output.stdout,
-                stderr: output.stderr,
-            },
+    if !output.status.success() {
+        return Err(format!(
+            "wavec dry-run failed using `{}` [{}]: {}",
+            wavec.display(),
+            classify_exit(output.status),
+            combined_output(&output.stdout, &output.stderr)
         ));
     }
 
-    let mut message = String::from(
-        "no compatible wavec found. Vex requires `wavec build --dry-run --error-format=json` schema_version 1",
-    );
-    if !failures.is_empty() {
-        message.push_str("\ntried:");
-        for failure in failures {
-            message.push_str("\n  - ");
-            message.push_str(&failure);
-        }
-    }
-    message.push_str("\nhelp: install the current Wave compiler or set VEX_WAVEC=/path/to/wavec");
-    Err(message)
+    Ok(DryRunOutput {
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
 }
 
-fn wavec_candidates() -> Vec<WavecCandidate> {
-    if let Some(explicit) = env::var_os("VEX_WAVEC").filter(|value| !value.is_empty()) {
-        return vec![WavecCandidate {
-            path: PathBuf::from(explicit),
-            source: "VEX_WAVEC",
-            explicit: true,
-        }];
-    }
-
-    let mut candidates = Vec::new();
-    let mut seen = HashSet::new();
-    let exe_name = wavec_executable_name();
-
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            push_candidate(
-                &mut candidates,
-                &mut seen,
-                dir.join(exe_name),
-                "next to vex",
-                false,
-            );
-        }
-
-        for ancestor in current_exe.ancestors() {
-            push_candidate(
-                &mut candidates,
-                &mut seen,
-                ancestor
-                    .join("Wave")
-                    .join("target")
-                    .join("debug")
-                    .join(exe_name),
-                "workspace Wave debug build",
-                false,
-            );
-            push_candidate(
-                &mut candidates,
-                &mut seen,
-                ancestor
-                    .join("Wave")
-                    .join("target")
-                    .join("release")
-                    .join(exe_name),
-                "workspace Wave release build",
-                false,
-            );
-        }
-    }
-
-    if let Some(wave_home) = env::var_os("WAVE_HOME") {
-        push_candidate(
-            &mut candidates,
-            &mut seen,
-            PathBuf::from(wave_home).join("bin").join(exe_name),
-            "WAVE_HOME",
-            false,
-        );
-    }
-
-    if let Some(home) = home_dir() {
-        push_candidate(
-            &mut candidates,
-            &mut seen,
-            home.join(".wave").join("bin").join(exe_name),
-            "home wave install",
-            false,
-        );
-    }
-
-    if let Some(paths) = env::var_os("PATH") {
-        for dir in env::split_paths(&paths) {
-            push_candidate(
-                &mut candidates,
-                &mut seen,
-                dir.join(exe_name),
-                "PATH",
-                false,
-            );
-        }
-    }
-
-    if candidates.is_empty() {
-        candidates.push(WavecCandidate {
-            path: PathBuf::from(exe_name),
-            source: "PATH",
-            explicit: false,
-        });
-    }
-
-    candidates
-}
-
-fn push_candidate(
-    candidates: &mut Vec<WavecCandidate>,
-    seen: &mut HashSet<String>,
-    path: PathBuf,
-    source: &'static str,
-    explicit: bool,
-) {
-    if !path.is_file() {
-        return;
-    }
-
-    let key = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.clone())
-        .to_string_lossy()
-        .to_string();
-    if !seen.insert(key) {
-        return;
-    }
-
-    candidates.push(WavecCandidate {
-        path,
-        source,
-        explicit,
-    });
-}
-
-fn looks_like_incompatible_wavec(output: &str) -> bool {
-    output.contains("unknown option for build: --dry-run")
-        || output.contains("unknown option") && output.contains("--dry-run")
-        || output.contains("unknown option") && output.contains("--error-format")
-}
-
-fn wavec_executable_name() -> &'static str {
-    if cfg!(windows) {
-        "wavec.exe"
-    } else {
-        "wavec"
-    }
-}
-
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
+fn wavec_path() -> PathBuf {
+    env::var_os("VEX_WAVEC")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("wavec"))
 }
 
 #[cfg(test)]
