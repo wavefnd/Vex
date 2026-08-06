@@ -1,5 +1,6 @@
 use crate::commands::build::{build, BuildMode};
 use crate::commands::check::check;
+use crate::commands::deps::fetch;
 use crate::commands::info::info;
 use crate::commands::init::init;
 use crate::commands::run::run;
@@ -9,6 +10,8 @@ use crate::version::version_vex;
 mod commands;
 mod lockfile;
 mod manifest;
+mod resolver;
+mod ui;
 mod validate;
 mod version;
 mod wavec;
@@ -29,6 +32,8 @@ fn main() {
         "build" => build(BuildMode::Build, &args[1..]),
         "run" => run(&args[1..]),
         "check" => check(&args[1..]),
+        "fetch" => fetch(false, &args[1..]),
+        "update" => fetch(true, &args[1..]),
         "info" => info(),
         "setup" => setup(&args[1..]),
         "--version" | "-V" | "version" => version_vex(),
@@ -79,6 +84,8 @@ fn print_help() {
     println!("  vex build [--target <triple>] [--release] [--dry-run]");
     println!("  vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]");
     println!("  vex check [--target <triple>] [--release] [--dry-run]");
+    println!("  vex fetch");
+    println!("  vex update");
     println!("  vex info");
     println!("  vex setup wavec [--version <version>]");
     println!("  vex --version");

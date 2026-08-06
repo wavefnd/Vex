@@ -19,6 +19,8 @@ vex init [--lib]
 vex build [--target <triple>] [--release] [--dry-run]
 vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]
 vex check [--target <triple>] [--release] [--dry-run]
+vex fetch
+vex update
 vex info
 vex setup wavec [--version <version>]
 vex --version
@@ -54,7 +56,7 @@ Vex uses `vex.ws` as the project manifest. The extension is `.ws`.
 
 ## Dependencies
 
-Until a central package registry exists, Vex supports path and Git dependencies.
+Vex currently uses a Git-first package model and does not require a central package registry. Local path dependencies are also supported.
 
 Path dependency:
 
@@ -82,11 +84,17 @@ Git dependency:
 
 A dependency entry must use exactly one of `path` or `git`. Git dependencies may specify at most one of `branch`, `tag`, or `rev`.
 
-Fetched Git dependencies are stored under `.vex/deps/<name>`. Every fetched dependency must contain a `vex.ws` file at its root.
+Fetched Git dependencies are stored under `.vex/deps/<name>`. Every fetched dependency must contain a `vex.ws` file at its root. Dependency manifests are resolved recursively, and a package name must identify one source and version requirement across the graph.
+
+On the first `vex fetch`, build, run, or check, Vex resolves each Git selector to an exact commit and records the complete transitive graph in `vex.lock`. Later commands reuse those commits without updating branches or tags. Run `vex update` explicitly to refresh Git refs and rewrite the lockfile.
+
+Commit `vex.lock` so the same manifest and lockfile select the same dependency graph. A dry run never fetches or rewrites dependencies; use `vex fetch` first when the locked checkout is not available locally.
 
 ## Build Model
 
 Vex uses `wavec` internally and validates the compiler dry-run plan before executing a real build. Vex commands stay manifest-based; raw compiler flags belong to `wavec`, not to Vex.
+
+Build progress is written to stderr with Cargo-style stages such as `Resolving`, `Fetching`, `Compiling`, `Checking`, `Running`, and `Finished`. Program output remains on stdout.
 
 Examples:
 
