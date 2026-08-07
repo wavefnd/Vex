@@ -81,10 +81,12 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  vex init [--lib]");
-    println!("  vex build [--target <triple>] [--release] [--dry-run]");
-    println!("  vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]");
-    println!("  vex check [--target <triple>] [--release] [--dry-run]");
-    println!("  vex fetch");
+    println!("  vex build [--target <triple>] [--release] [--dry-run] [--locked] [--offline]");
+    println!(
+        "  vex run [--target <triple>] [--release] [--dry-run] [--locked] [--offline] [-- <args...>]"
+    );
+    println!("  vex check [--target <triple>] [--release] [--dry-run] [--locked] [--offline]");
+    println!("  vex fetch [--locked] [--offline]");
     println!("  vex update");
     println!("  vex info");
     println!("  vex setup wavec [--version <version>]");

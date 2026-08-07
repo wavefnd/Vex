@@ -14,6 +14,8 @@ use crate::ui;
 pub struct ResolveOptions {
     pub dry_run: bool,
     pub update: bool,
+    pub locked: bool,
+    pub offline: bool,
 }
 
 #[derive(Debug)]
@@ -48,7 +50,28 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
         );
     }
 
-    let existing = read_lockfile()?.unwrap_or_else(Lockfile::empty);
+    if options.update && options.locked {
+        return Err("`--locked` cannot be used while updating dependencies".to_string());
+    }
+    if options.update && options.offline {
+        return Err("`--offline` cannot be used while updating Git dependencies".to_string());
+    }
+
+    let existing = read_lockfile()?;
+    if options.locked {
+        let lockfile = existing.as_ref().ok_or_else(|| {
+            format!(
+                "`{LOCKFILE_NAME}` is required by `--locked`\nhelp: run `vex fetch` and commit `{LOCKFILE_NAME}`"
+            )
+        })?;
+        if lockfile.version != LOCKFILE_VERSION {
+            return Err(format!(
+                "`{LOCKFILE_NAME}` version {} cannot be used with `--locked`; expected version {LOCKFILE_VERSION}\nhelp: run `vex fetch` to regenerate the lockfile",
+                lockfile.version
+            ));
+        }
+    }
+    let existing = existing.unwrap_or_else(Lockfile::empty);
     let root = env_root()?;
     let dep_root = root.join(".vex/deps");
     if !options.dry_run {
@@ -74,6 +97,11 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
     .normalized();
 
     if resolved != existing {
+        if options.locked {
+            return Err(format!(
+                "`{LOCKFILE_NAME}` needs to be updated, but `--locked` prevents changes\nhelp: run `vex fetch` and commit the updated `{LOCKFILE_NAME}`"
+            ));
+        }
         if options.dry_run {
             return Err(format!(
                 "dependency graph differs from `{LOCKFILE_NAME}`\nhelp: run `vex fetch` to resolve and lock dependencies"
@@ -305,6 +333,13 @@ impl Resolver<'_> {
                 })
         };
 
+        if self.options.locked && locked.is_none() {
+            return Err(format!(
+                "`{LOCKFILE_NAME}` does not match Git dependency `{}`\nhelp: run `vex fetch` to update the lockfile",
+                dependency.name
+            ));
+        }
+
         if self.options.dry_run {
             let commit = locked.ok_or_else(|| {
                 format!(
@@ -313,6 +348,18 @@ impl Resolver<'_> {
                 )
             })?;
             require_checkout_at(destination, url, &commit)?;
+            return Ok(commit);
+        }
+
+        if self.options.offline {
+            let commit = locked.ok_or_else(|| {
+                format!(
+                    "Git dependency `{}` is not pinned for offline use\nhelp: run `vex fetch` while online",
+                    dependency.name
+                )
+            })?;
+            require_local_repository(destination, url, &dependency.name, &commit)?;
+            checkout_commit(destination, &commit)?;
             return Ok(commit);
         }
 
@@ -398,6 +445,28 @@ fn ensure_repository(destination: &Path, url: &str, name: &str) -> Result<(), St
         Command::new("git").args(["clone", url]).arg(destination),
         "clone Git dependency",
     )
+}
+
+fn require_local_repository(
+    destination: &Path,
+    url: &str,
+    name: &str,
+    commit: &str,
+) -> Result<(), String> {
+    if !destination.join(".git").is_dir() {
+        return Err(format!(
+            "locked dependency `{name}` is not available locally in offline mode\n\nCaused by:\n  checkout `{}` is missing\n\nhelp: run `vex fetch` while online",
+            destination.display()
+        ));
+    }
+    verify_origin(destination, url)?;
+    if !git_has_commit(destination, commit)? {
+        return Err(format!(
+            "locked dependency `{name}` is incomplete in offline mode\n\nCaused by:\n  commit `{commit}` was not found in `{}`\n\nhelp: run `vex fetch` while online",
+            destination.display()
+        ));
+    }
+    Ok(())
 }
 
 fn verify_origin(destination: &Path, expected: &str) -> Result<(), String> {

@@ -48,6 +48,12 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
 
     create_package(&app, "app", &[("middle", git_url(&middle), Some("master"))]);
 
+    let missing_lock = vex(&app, &["fetch", "--locked"]);
+    assert_failure(&missing_lock, "locked fetch without a lockfile");
+    let missing_lock_stderr = String::from_utf8_lossy(&missing_lock.stderr);
+    assert!(missing_lock_stderr.contains("required by `--locked`"));
+    assert!(!app.join(".vex/deps/middle").exists());
+
     let first_fetch = vex(&app, &["fetch"]);
     assert_success(&first_fetch, "initial vex fetch");
     let first_stderr = String::from_utf8_lossy(&first_fetch.stderr);
@@ -65,14 +71,31 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
     let leaf_updated = commit_all(&leaf, "update leaf");
     assert_ne!(leaf_initial, leaf_updated);
 
-    let locked_fetch = vex(&app, &["fetch"]);
-    assert_success(&locked_fetch, "locked vex fetch");
+    let locked_fetch = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_success(&locked_fetch, "locked offline vex fetch");
     let locked_stderr = String::from_utf8_lossy(&locked_fetch.stderr);
     assert!(locked_stderr.contains("Resolving"), "{locked_stderr}");
     assert!(
         !locked_stderr.contains("Fetching"),
         "locked fetch unexpectedly contacted Git: {locked_stderr}"
     );
+    assert_eq!(read_lock(&app), first_lock);
+    assert_eq!(
+        git_stdout(&app.join(".vex/deps/leaf"), &["rev-parse", "HEAD"]),
+        leaf_initial
+    );
+
+    fs::remove_dir_all(app.join(".vex/deps/leaf"))
+        .expect("managed leaf checkout must be removed for the offline test");
+    let missing_offline = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_failure(&missing_offline, "offline fetch with a missing checkout");
+    let missing_offline_stderr = String::from_utf8_lossy(&missing_offline.stderr);
+    assert!(missing_offline_stderr.contains("not available locally in offline mode"));
+    assert!(missing_offline_stderr.contains("run `vex fetch` while online"));
+    assert_eq!(read_lock(&app), first_lock);
+
+    let restored = vex(&app, &["fetch", "--locked"]);
+    assert_success(&restored, "online locked fetch restoring a checkout");
     assert_eq!(read_lock(&app), first_lock);
     assert_eq!(
         git_stdout(&app.join(".vex/deps/leaf"), &["rev-parse", "HEAD"]),
@@ -93,6 +116,13 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
         git_stdout(&app.join(".vex/deps/leaf"), &["rev-parse", "HEAD"]),
         leaf_updated
     );
+
+    create_package(&app, "app", &[("middle", git_url(&middle), Some("other"))]);
+    let mismatched = vex(&app, &["fetch", "--locked"]);
+    assert_failure(&mismatched, "locked fetch with a changed manifest");
+    let mismatched_stderr = String::from_utf8_lossy(&mismatched.stderr);
+    assert!(mismatched_stderr.contains("does not match Git dependency `middle`"));
+    assert_eq!(read_lock(&app), updated_lock);
 }
 
 fn create_package(path: &Path, name: &str, dependencies: &[(&str, String, Option<&str>)]) {
@@ -185,6 +215,15 @@ fn assert_success(output: &Output, action: &str) {
     assert!(
         output.status.success(),
         "{action} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_failure(output: &Output, action: &str) {
+    assert!(
+        !output.status.success(),
+        "{action} unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
