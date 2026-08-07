@@ -20,6 +20,8 @@ struct VexBuildOptions {
     target: Option<String>,
     release: bool,
     dry_run: bool,
+    locked: bool,
+    offline: bool,
     run_args: Vec<String>,
     run_separator_seen: bool,
 }
@@ -74,6 +76,8 @@ fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
         ResolveOptions {
             dry_run: options.dry_run,
             update: false,
+            locked: options.locked,
+            offline: options.offline,
         },
     )?;
 
@@ -147,6 +151,8 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
             }
             "--release" => options.release = true,
             "--dry-run" => options.dry_run = true,
+            "--locked" => options.locked = true,
+            "--offline" => options.offline = true,
             "-h" | "--help" => return Err(build_usage(mode).to_string()),
             _ if token.starts_with("--target=") => {
                 options.target = Some(token.trim_start_matches("--target=").to_string());
@@ -171,11 +177,15 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
 
 fn build_usage(mode: BuildMode) -> &'static str {
     match mode {
-        BuildMode::Build => "usage: vex build [--target <triple>] [--release] [--dry-run]",
-        BuildMode::Run => {
-            "usage: vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]"
+        BuildMode::Build => {
+            "usage: vex build [--target <triple>] [--release] [--dry-run] [--locked] [--offline]"
         }
-        BuildMode::Check => "usage: vex check [--target <triple>] [--release] [--dry-run]",
+        BuildMode::Run => {
+            "usage: vex run [--target <triple>] [--release] [--dry-run] [--locked] [--offline] [-- <args...>]"
+        }
+        BuildMode::Check => {
+            "usage: vex check [--target <triple>] [--release] [--dry-run] [--locked] [--offline]"
+        }
     }
 }
 
@@ -269,6 +279,8 @@ mod tests {
                 "--target",
                 "x86_64-unknown-linux-gnu",
                 "--release",
+                "--locked",
+                "--offline",
                 "--",
                 "arg",
             ]),
@@ -277,6 +289,8 @@ mod tests {
 
         assert_eq!(options.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert!(options.release);
+        assert!(options.locked);
+        assert!(options.offline);
         assert_eq!(options.run_args, strings(&["arg"]));
     }
 

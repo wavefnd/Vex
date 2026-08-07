@@ -16,10 +16,10 @@ Vex runs `wavec` from `PATH` by default. Set `VEX_WAVEC=/path/to/wavec` to use a
 
 ```sh
 vex init [--lib]
-vex build [--target <triple>] [--release] [--dry-run]
-vex run [--target <triple>] [--release] [--dry-run] [-- <args...>]
-vex check [--target <triple>] [--release] [--dry-run]
-vex fetch
+vex build [--target <triple>] [--release] [--dry-run] [--locked] [--offline]
+vex run [--target <triple>] [--release] [--dry-run] [--locked] [--offline] [-- <args...>]
+vex check [--target <triple>] [--release] [--dry-run] [--locked] [--offline]
+vex fetch [--locked] [--offline]
 vex update
 vex info
 vex setup wavec [--version <version>]
@@ -90,6 +90,21 @@ On the first `vex fetch`, build, run, or check, Vex resolves each Git selector t
 
 Commit `vex.lock` so the same manifest and lockfile select the same dependency graph. A dry run never fetches or rewrites dependencies; use `vex fetch` first when the locked checkout is not available locally.
 
+### Reproducible and Offline Modes
+
+Use `--locked` when Vex must not create or modify `vex.lock`. The command fails if the lockfile is missing, uses an older schema, or does not match the manifest graph. It may still download a commit already pinned by the lockfile when the managed checkout is missing.
+
+Use `--offline` to prohibit all Git network operations. Vex may switch an existing managed checkout to a locally available locked commit, but it fails with instructions to run `vex fetch` when a checkout or commit is missing.
+
+Combine both options for the strictest CI build:
+
+```sh
+vex fetch --locked
+vex build --locked --offline
+```
+
+`vex update` intentionally accepts neither option because it refreshes Git refs and rewrites the lockfile.
+
 ## Build Model
 
 Vex uses `wavec` internally and validates the compiler dry-run plan before executing a real build. Vex commands stay manifest-based; raw compiler flags belong to `wavec`, not to Vex.
@@ -100,6 +115,7 @@ Examples:
 
 ```sh
 vex build --target x86_64-unknown-linux-gnu
+vex build --locked --offline
 vex run -- arg1 arg2
 vex check
 VEX_WAVEC=/opt/wave/bin/wavec vex build --dry-run
