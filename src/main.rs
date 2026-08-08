@@ -87,7 +87,7 @@ fn print_help() {
     );
     println!("  vex check [--target <triple>] [--release] [--dry-run] [--locked] [--offline]");
     println!("  vex fetch [--locked] [--offline]");
-    println!("  vex update");
+    println!("  vex update [<package>...]");
     println!("  vex info");
     println!("  vex setup wavec [--version <version>]");
     println!("  vex --version");

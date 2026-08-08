@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -10,12 +10,34 @@ use crate::lockfile::{
 use crate::manifest::{Dependency, DependencySource, Manifest, MANIFEST_FILE};
 use crate::ui;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ResolveOptions {
     pub dry_run: bool,
-    pub update: bool,
+    pub update: UpdatePolicy,
     pub locked: bool,
     pub offline: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum UpdatePolicy {
+    #[default]
+    ReuseLocked,
+    UpdateAll,
+    UpdateSelected(BTreeSet<String>),
+}
+
+impl UpdatePolicy {
+    fn is_update(&self) -> bool {
+        !matches!(self, Self::ReuseLocked)
+    }
+
+    fn updates(&self, package: &str) -> bool {
+        match self {
+            Self::ReuseLocked => false,
+            Self::UpdateAll => true,
+            Self::UpdateSelected(packages) => packages.contains(package),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -50,10 +72,10 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
         );
     }
 
-    if options.update && options.locked {
+    if options.update.is_update() && options.locked {
         return Err("`--locked` cannot be used while updating dependencies".to_string());
     }
-    if options.update && options.offline {
+    if options.update.is_update() && options.offline {
         return Err("`--offline` cannot be used while updating Git dependencies".to_string());
     }
 
@@ -74,6 +96,8 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
     let existing = existing.unwrap_or_else(Lockfile::empty);
     let root = env_root()?;
     let dep_root = root.join(".vex/deps");
+    let locked = options.locked;
+    let dry_run = options.dry_run;
     if !options.dry_run {
         fs::create_dir_all(&dep_root)
             .map_err(|e| format!("failed to create `{}`: {e}", dep_root.display()))?;
@@ -89,6 +113,7 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
         visiting: Vec::new(),
     };
     resolver.resolve_manifest_dependencies(manifest)?;
+    resolver.validate_selected_packages()?;
 
     let resolved = Lockfile {
         version: LOCKFILE_VERSION,
@@ -97,12 +122,12 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
     .normalized();
 
     if resolved != existing {
-        if options.locked {
+        if locked {
             return Err(format!(
                 "`{LOCKFILE_NAME}` needs to be updated, but `--locked` prevents changes\nhelp: run `vex fetch` and commit the updated `{LOCKFILE_NAME}`"
             ));
         }
-        if options.dry_run {
+        if dry_run {
             return Err(format!(
                 "dependency graph differs from `{LOCKFILE_NAME}`\nhelp: run `vex fetch` to resolve and lock dependencies"
             ));
@@ -153,6 +178,47 @@ enum RequestKey {
 }
 
 impl Resolver<'_> {
+    fn validate_selected_packages(&self) -> Result<(), String> {
+        let UpdatePolicy::UpdateSelected(selected) = &self.options.update else {
+            return Ok(());
+        };
+
+        let available = self
+            .packages
+            .values()
+            .filter(|package| matches!(package.source, LockedSource::Git { .. }))
+            .map(|package| package.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let unavailable = selected
+            .iter()
+            .filter(|name| !available.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if unavailable.is_empty() {
+            return Ok(());
+        }
+
+        let requested = unavailable
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let package_label = if unavailable.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        };
+        let available = if available.is_empty() {
+            "<none>".to_string()
+        } else {
+            available.into_iter().collect::<Vec<_>>().join(", ")
+        };
+        Err(format!(
+            "cannot update {package_label} {requested}: one or more requested names are not Git dependencies in the current graph\nhelp: available Git packages: {available}\nhelp: run `vex update <package>...` using one or more available package names"
+        ))
+    }
+
     fn resolve_manifest_dependencies(
         &mut self,
         manifest: &Manifest,
@@ -309,7 +375,7 @@ impl Resolver<'_> {
             return Err("internal error: expected Git dependency".to_string());
         };
 
-        let locked = if self.options.update {
+        let locked = if self.options.update.updates(&dependency.name) {
             None
         } else {
             self.existing
