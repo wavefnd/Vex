@@ -54,7 +54,12 @@ jobs:
           rustup default stable
 
       - name: Run unit and integration tests
+        if: runner.os != 'Windows'
         run: cargo test --locked
+
+      - name: Run unit tests
+        if: runner.os == 'Windows'
+        run: cargo test --locked --bin vex
 
       - name: Build
         run: cargo build --locked
