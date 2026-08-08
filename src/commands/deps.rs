@@ -1,13 +1,15 @@
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::manifest::Manifest;
-use crate::resolver::{resolve, ResolveOptions};
+use crate::resolver::{resolve, ResolveOptions, UpdatePolicy};
 use crate::ui;
 
 #[derive(Debug, Default)]
 struct DependencyOptions {
     locked: bool,
     offline: bool,
+    packages: BTreeSet<String>,
 }
 
 pub fn fetch(update: bool, args: &[String]) {
@@ -33,11 +35,34 @@ fn run_fetch(update: bool, args: &[String]) -> Result<(), String> {
     }
     let started = Instant::now();
     let manifest = Manifest::load()?;
+    let update_policy = if update {
+        if options.packages.is_empty() {
+            ui::status("Updating", "all Git dependencies");
+            UpdatePolicy::UpdateAll
+        } else {
+            ui::status(
+                "Updating",
+                format!(
+                    "Git package{} {}",
+                    if options.packages.len() == 1 { "" } else { "s" },
+                    options
+                        .packages
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            UpdatePolicy::UpdateSelected(options.packages)
+        }
+    } else {
+        UpdatePolicy::ReuseLocked
+    };
     let resolution = resolve(
         &manifest,
         ResolveOptions {
             dry_run: false,
-            update,
+            update: update_policy,
             locked: options.locked,
             offline: options.offline,
         },
@@ -66,16 +91,19 @@ fn parse_options(update: bool, args: &[String]) -> Result<DependencyOptions, Str
             "--offline" => options.offline = true,
             "-h" | "--help" => {
                 return Err(if update {
-                    "usage: vex update".to_string()
+                    "usage: vex update [<package>...]".to_string()
                 } else {
                     "usage: vex fetch [--locked] [--offline]".to_string()
                 });
+            }
+            _ if update && !argument.starts_with('-') => {
+                options.packages.insert(argument.clone());
             }
             _ => {
                 return Err(format!(
                     "unknown Vex option `{argument}`\nusage: vex {}",
                     if update {
-                        "update"
+                        "update [<package>...]"
                     } else {
                         "fetch [--locked] [--offline]"
                     }
@@ -100,5 +128,15 @@ mod tests {
             .expect("fetch policy options must parse");
         assert!(options.locked);
         assert!(options.offline);
+    }
+
+    #[test]
+    fn parses_and_deduplicates_targeted_update_packages() {
+        let options = parse_options(true, &strings(&["beta", "alpha", "beta"]))
+            .expect("targeted update packages must parse");
+        assert_eq!(
+            options.packages.into_iter().collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
     }
 }

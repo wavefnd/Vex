@@ -20,7 +20,7 @@ vex build [--target <triple>] [--release] [--dry-run] [--locked] [--offline]
 vex run [--target <triple>] [--release] [--dry-run] [--locked] [--offline] [-- <args...>]
 vex check [--target <triple>] [--release] [--dry-run] [--locked] [--offline]
 vex fetch [--locked] [--offline]
-vex update
+vex update [<package>...]
 vex info
 vex setup wavec [--version <version>]
 vex --version
@@ -86,7 +86,17 @@ A dependency entry must use exactly one of `path` or `git`. Git dependencies may
 
 Fetched Git dependencies are stored under `.vex/deps/<name>`. Every fetched dependency must contain a `vex.ws` file at its root. Dependency manifests are resolved recursively, and a package name must identify one source and version requirement across the graph.
 
-On the first `vex fetch`, build, run, or check, Vex resolves each Git selector to an exact commit and records the complete transitive graph in `vex.lock`. Later commands reuse those commits without updating branches or tags. Run `vex update` explicitly to refresh Git refs and rewrite the lockfile.
+On the first `vex fetch`, build, run, or check, Vex resolves each Git selector to an exact commit and records the complete transitive graph in `vex.lock`. Later commands reuse those commits without updating branches or tags. Run `vex update` explicitly to refresh every Git dependency and rewrite the lockfile.
+
+Pass one or more package names to update only those packages, including transitive dependencies. Unrelated packages keep their exact locked commits and are not fetched. If an updated package changes its dependencies, Vex recalculates that part of the graph while preserving unrelated locked packages.
+
+```sh
+# Refresh the complete Git dependency graph.
+vex update
+
+# Refresh only alpha and the transitive package shared_core.
+vex update alpha shared_core
+```
 
 Commit `vex.lock` so the same manifest and lockfile select the same dependency graph. A dry run never fetches or rewrites dependencies; use `vex fetch` first when the locked checkout is not available locally.
 

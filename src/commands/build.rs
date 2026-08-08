@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::manifest::Manifest;
-use crate::resolver::{resolve, ResolveOptions};
+use crate::resolver::{resolve, ResolveOptions, UpdatePolicy};
 use crate::ui;
 use crate::validate::{collect_inputs, validate_build_invocation, BuildValidationRequest};
 use crate::wavec::run_build_with_dry_run;
@@ -75,7 +75,7 @@ fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
         &manifest,
         ResolveOptions {
             dry_run: options.dry_run,
-            update: false,
+            update: UpdatePolicy::ReuseLocked,
             locked: options.locked,
             offline: options.offline,
         },
