@@ -29,6 +29,33 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+  release-tooling:
+    name: Package / Linux amd64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-gnu
+          rustup default stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build release binary
+        run: python x.py build x86_64-unknown-linux-gnu
+
+      - name: Package and smoke test release binary
+        run: python x.py package x86_64-unknown-linux-gnu
+
+      - name: Verify release checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+
   test:
     name: Test / ${{ matrix.name }}
     strategy:
@@ -52,6 +79,14 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test release tooling
+        run: python -m unittest discover -s tests/xpy -v
 
       - name: Run unit and integration tests
         if: runner.os != 'Windows'

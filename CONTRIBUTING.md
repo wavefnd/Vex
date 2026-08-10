@@ -27,6 +27,7 @@ boundaries or a persistent file format.
 You need:
 
 - a stable Rust toolchain with `rustfmt` and `clippy`
+- Python 3.11 or newer for `x.py` release tooling
 - Git for dependency integration tests
 - a compatible `wavec` in `PATH` for end-to-end build and run tests
 
@@ -39,6 +40,12 @@ cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
+```
+
+The same baseline is available through the repository release tool:
+
+```sh
+python3 x.py check
 ```
 
 ## Making a change
@@ -62,6 +69,8 @@ Add tests at the same level as the behavior being changed:
 - parser and policy details belong in unit tests
 - dependency graph and Git behavior belong in integration tests
 - compiler invocation changes require dry-run schema and end-to-end smoke tests
+- release-tool changes require `python3 -m unittest discover -s tests/xpy -v`
+- package changes require archive-content, checksum, and executable smoke tests
 
 Git integration tests must use local fixture repositories and must not require
 external network access. Dependency changes should cover direct and transitive
@@ -70,6 +79,11 @@ graphs, exact locked commits, cycles, source/version/name conflicts, and relevan
 
 When changing selective update behavior, prove that unrelated locked commits and
 remote-tracking refs remain unchanged.
+
+Release packages are created with `python3 x.py build` followed by
+`python3 x.py package`. Do not hand-edit `dist/` artifacts. The stricter
+`python3 x.py release` command is reserved for a clean commit carrying the exact
+`v<version>` tag.
 
 ## Pull requests
 
