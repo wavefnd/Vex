@@ -1,0 +1,39 @@
+[CLI and Commands]
+M: LunaStev <luna@lunastev.org>
+F: src/main.rs
+F: src/commands/
+F: src/ui.rs
+
+[Manifest and Lockfile]
+M: LunaStev <luna@lunastev.org>
+F: src/manifest.rs
+F: src/lockfile.rs
+
+[Dependency Resolution and Git]
+M: LunaStev <luna@lunastev.org>
+F: src/resolver.rs
+F: tests/git_*.rs
+
+[wavec Integration]
+M: LunaStev <luna@lunastev.org>
+F: src/wavec.rs
+F: src/validate.rs
+F: src/commands/build.rs
+F: src/commands/check.rs
+F: src/commands/run.rs
+
+[Release and CI]
+M: LunaStev <luna@lunastev.org>
+F: .github/
+F: Cargo.toml
+F: Cargo.lock
+F: Makefile
+F: x.py
+
+[Documentation and Community]
+M: LunaStev <luna@lunastev.org>
+F: *.md
+F: MAINTAINERS
+F: COPYRIGHT
+F: NOTICE
+F: ai.txt

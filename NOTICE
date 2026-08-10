@@ -1,0 +1,19 @@
+Vex Package Manager
+===================
+
+Vex is the package manager and build tool for the Wave programming language.
+
+Copyright (c) 2025-2026 Wave Foundation
+Copyright (c) 2025-2026 LunaStev and contributors
+
+Unless a file states otherwise, Vex is licensed under the Mozilla Public
+License 2.0. See LICENSE for the complete license text and COPYRIGHT for project
+copyright information.
+
+Vex invokes the separately distributed `wavec` compiler. The Vex source and
+release archives do not grant additional rights to `wavec`, Wave packages, or
+third-party dependencies; those works remain subject to their respective
+licenses.
+
+Source code for this release is available from:
+https://github.com/wavefnd/Vex
