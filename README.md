@@ -134,3 +134,13 @@ VEX_WAVEC=/opt/wave/bin/wavec vex build --dry-run
 ## License
 
 [MPL 2.0 LICENSE](LICENSE)
+
+## Community and Project Policies
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Maintainers](MAINTAINERS)
+- [Security Policy](SECURITY.md)
+- [Copyright](COPYRIGHT)
+- [Notice](NOTICE)
+- [AI Usage Policy](ai.txt)

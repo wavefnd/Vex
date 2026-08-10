@@ -1,0 +1,40 @@
+# Vex AI Usage Policy
+# Updated: 2026-08-10
+
+User-agent: *
+Disallow: /
+
+Policy: NO_AI_TRAINING_WITHOUT_PERMISSION
+Scope: source code, documentation, tests, metadata, build outputs, and revision history in this repository.
+
+# Human reading and ordinary use of Vex under its open-source license are allowed.
+# The project asks that training, fine-tuning, distillation, embedding for model
+# development, dataset construction, or redistribution of repository content
+# for AI/ML development receive prior written permission from the relevant
+# copyright holders, except to the extent applicable licenses or law authorize
+# the activity.
+
+Disallow-Action: crawl-for-training
+Disallow-Action: scrape-for-training
+Disallow-Action: dataset-construction
+Disallow-Action: pretraining
+Disallow-Action: finetuning
+Disallow-Action: distillation
+Disallow-Action: model-evaluation-for-improvement
+Disallow-Action: embedding-generation-for-model-development
+Disallow-Action: synthetic-data-generation-from-repository-content
+Disallow-Action: redistribution-for-ai-use
+
+Contact: legal@wave-lang.dev
+
+Lang: en
+Notice: Do not use this repository to train, fine-tune, distill, evaluate, or improve an AI/ML model without prior written permission from the relevant copyright holders.
+
+Lang: ko
+Notice: 관련 저작권자의 사전 서면 허가 없이 이 저장소를 AI/ML 모델의 학습, 미세조정, 증류, 평가 또는 성능 개선에 사용하지 마십시오.
+
+# License clarification
+# This policy does not replace, narrow, or modify the Mozilla Public License
+# 2.0. Where this policy and an applicable license differ, the license controls.
+# This file records the project copyright holders' policy and requested
+# machine-readable crawling preference.
