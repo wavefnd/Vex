@@ -77,10 +77,13 @@ vendor/
 # Local caches
 .cache/
 .lock/
+__pycache__/
+*.py[cod]
 
 # Build directories
 CMakeFiles/
 build/
+/dist/
 cmake-build-debug/
 cmake-build-release/
 

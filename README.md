@@ -9,6 +9,7 @@ Vex is designed to sit above `wavec` in the same way Cargo sits above `rustc`: V
 - Rust toolchain for building Vex from source
 - `wavec` compatible with the `build --dry-run --error-format=json` schema v1 contract
 - `git` when using Git dependencies
+- Python 3.11 or newer when using the release tooling
 
 Vex runs `wavec` from `PATH` by default. Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
 
@@ -129,6 +130,50 @@ vex build --locked --offline
 vex run -- arg1 arg2
 vex check
 VEX_WAVEC=/opt/wave/bin/wavec vex build --dry-run
+```
+
+## Development and release tooling
+
+The repository-level `x.py` script is the supported entry point for release
+builds and packages. It reads the version from `Cargo.toml`, always builds with
+the committed `Cargo.lock`, and writes archives plus `SHA256SUMS` to `dist/`.
+Run it with Python 3.11 or newer:
+
+```sh
+# Show the host and every supported release target.
+python3 x.py list-targets
+
+# Run formatting, release-tool tests, Rust tests, Clippy, and a debug build.
+python3 x.py check
+
+# Build and package the native target.
+python3 x.py build
+python3 x.py package
+
+# Build or package one or more explicit targets.
+python3 x.py build x86_64-unknown-linux-gnu
+python3 x.py package x86_64-unknown-linux-gnu
+```
+
+Archives contain the Vex executable together with `README.md`, `LICENSE`,
+`NOTICE`, and `COPYRIGHT`. Their file order, permissions, owners, and timestamps
+are normalized. Set `SOURCE_DATE_EPOCH` to an explicit non-negative Unix
+timestamp when reproducing an artifact outside the tagged source revision.
+
+`python3 x.py release [<target>...]` is intentionally stricter than separate
+build and package commands. It runs the complete validation suite and succeeds
+only when the working tree is clean and `HEAD` has the exact `v<version>` tag.
+Cross-target builds still require the corresponding Rust target and native
+linker to be installed. `VEX_RELEASE_HOST` exists for release infrastructure
+that must override host-target detection; normal development should not set it.
+
+The existing `Makefile` remains available during the transition, but new
+release automation should use `x.py` so local builds and CI share one contract.
+
+Verify downloaded archives from the directory containing `SHA256SUMS`:
+
+```sh
+sha256sum --check SHA256SUMS
 ```
 
 ## License
