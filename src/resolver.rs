@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -452,11 +453,7 @@ impl Resolver<'_> {
             "refs/remotes/origin/HEAD^{commit}".to_string()
         };
         let commit = git_stdout(
-            Command::new("git").arg("-C").arg(destination).args([
-                "rev-parse",
-                "--verify",
-                &reference,
-            ]),
+            git_command_in(destination).args(["rev-parse", "--verify", &reference]),
             "resolve Git dependency reference",
         )?;
         checkout_commit(destination, &commit)?;
@@ -507,8 +504,11 @@ fn ensure_repository(destination: &Path, url: &str, name: &str) -> Result<(), St
     fs::create_dir_all(parent)
         .map_err(|e| format!("failed to create `{}`: {e}", parent.display()))?;
     ui::status("Cloning", format!("{name} ({url})"));
+    let destination = git_cli_path(destination);
     run_git(
-        Command::new("git").args(["clone", url]).arg(destination),
+        Command::new("git")
+            .args(["clone", url])
+            .arg(destination.as_ref()),
         "clone Git dependency",
     )
 }
@@ -537,10 +537,7 @@ fn require_local_repository(
 
 fn verify_origin(destination: &Path, expected: &str) -> Result<(), String> {
     let actual = git_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["remote", "get-url", "origin"]),
+        git_command_in(destination).args(["remote", "get-url", "origin"]),
         "read Git dependency origin",
     )?;
     if actual == expected {
@@ -554,18 +551,13 @@ fn verify_origin(destination: &Path, expected: &str) -> Result<(), String> {
 
 fn git_fetch(destination: &Path) -> Result<(), String> {
     run_git(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["fetch", "origin", "--tags", "--prune"]),
+        git_command_in(destination).args(["fetch", "origin", "--tags", "--prune"]),
         "fetch Git dependency",
     )
 }
 
 fn git_has_commit(destination: &Path, commit: &str) -> Result<bool, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(destination)
+    let output = git_command_in(destination)
         .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
         .output()
         .map_err(|e| format!("failed to inspect Git dependency commit: {e}"))?;
@@ -581,10 +573,7 @@ fn require_checkout_at(destination: &Path, url: &str, commit: &str) -> Result<()
     }
     verify_origin(destination, url)?;
     let current = git_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["rev-parse", "HEAD"]),
+        git_command_in(destination).args(["rev-parse", "HEAD"]),
         "read Git dependency HEAD",
     )?;
     if current != commit {
@@ -598,10 +587,7 @@ fn require_checkout_at(destination: &Path, url: &str, commit: &str) -> Result<()
 
 fn checkout_commit(destination: &Path, commit: &str) -> Result<(), String> {
     let current = git_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["rev-parse", "HEAD"]),
+        git_command_in(destination).args(["rev-parse", "HEAD"]),
         "read Git dependency HEAD",
     )?;
     if current == commit {
@@ -609,10 +595,7 @@ fn checkout_commit(destination: &Path, commit: &str) -> Result<(), String> {
     }
 
     let dirty = git_stdout(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["status", "--porcelain"]),
+        git_command_in(destination).args(["status", "--porcelain"]),
         "inspect Git dependency checkout",
     )?;
     if !dirty.is_empty() {
@@ -623,12 +606,49 @@ fn checkout_commit(destination: &Path, commit: &str) -> Result<(), String> {
     }
 
     run_git(
-        Command::new("git")
-            .arg("-C")
-            .arg(destination)
-            .args(["checkout", "--detach", commit]),
+        git_command_in(destination).args(["checkout", "--detach", commit]),
         "checkout locked Git dependency commit",
     )
+}
+
+fn git_command_in(destination: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(git_cli_path(destination).as_ref());
+    command
+}
+
+fn git_cli_path(path: &Path) -> Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = path.components();
+        let prefix = match components.next() {
+            Some(Component::Prefix(prefix)) => prefix,
+            _ => return Cow::Borrowed(path),
+        };
+        let mut normalized = match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", drive as char)),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut normalized = PathBuf::from(r"\\");
+                normalized.push(server);
+                normalized.push(share);
+                normalized
+            }
+            _ => return Cow::Borrowed(path),
+        };
+        for component in components {
+            if !matches!(component, Component::RootDir) {
+                normalized.push(component.as_os_str());
+            }
+        }
+        Cow::Owned(normalized)
+    }
+
+    #[cfg(not(windows))]
+    {
+        Cow::Borrowed(path)
+    }
 }
 
 fn run_git(command: &mut Command, action: &str) -> Result<(), String> {
@@ -693,5 +713,25 @@ mod tests {
             version: Some("1.0.0".to_string()),
         };
         assert_eq!(first, second);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_cli_path_removes_verbatim_disk_prefix() {
+        let path = Path::new(r"\\?\C:\workspace\project\.vex\deps\package");
+        assert_eq!(
+            git_cli_path(path).as_ref(),
+            Path::new(r"C:\workspace\project\.vex\deps\package")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_cli_path_removes_verbatim_unc_prefix() {
+        let path = Path::new(r"\\?\UNC\server\share\project\.vex\deps\package");
+        assert_eq!(
+            git_cli_path(path).as_ref(),
+            Path::new(r"\\server\share\project\.vex\deps\package")
+        );
     }
 }

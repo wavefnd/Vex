@@ -71,6 +71,8 @@ Add tests at the same level as the behavior being changed:
 - compiler invocation changes require dry-run schema and end-to-end smoke tests
 - release-tool changes require `python3 -m unittest discover -s tests/xpy -v`
 - package changes require archive-content, checksum, and executable smoke tests
+- platform changes must preserve native integration coverage where a hosted
+  runner exists; cross-build-only targets must be documented as experimental
 
 Git integration tests must use local fixture repositories and must not require
 external network access. Dependency changes should cover direct and transitive

@@ -13,6 +13,27 @@ Vex is designed to sit above `wavec` in the same way Cargo sits above `rustc`: V
 
 Vex runs `wavec` from `PATH` by default. Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
 
+## Platform validation
+
+The v0.0.1 release candidate targets below are validated on every pull request.
+“Candidate” means the platform is intended to receive a release archive after
+the release workflow also passes package and clean-environment smoke tests.
+
+| Platform | Rust target | CI validation | v0.0.1 status |
+| --- | --- | --- | --- |
+| Linux amd64 | `x86_64-unknown-linux-gnu` | native tests, build, package smoke | Candidate |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | native tests and build | Candidate |
+| Windows x64 | `x86_64-pc-windows-msvc` | native tests and build | Candidate |
+| macOS Intel | `x86_64-apple-darwin` | native tests and build | Candidate |
+| macOS Apple Silicon | `aarch64-apple-darwin` | native tests and build | Candidate |
+| Linux RISC-V | `riscv64gc-unknown-linux-gnu` | cross-build and QEMU version smoke | Experimental |
+
+Windows release artifacts use the MSVC target. A Windows GNU artifact is not
+part of the v0.0.1 scope. RISC-V remains experimental because its test coverage
+is limited to cross-build and QEMU smoke rather than the complete integration
+suite. Final minimum OS and glibc versions will be fixed by the release workflow
+before v0.0.1 is tagged.
+
 ## Commands
 
 ```sh
