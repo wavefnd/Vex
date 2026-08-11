@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod support;
+use support::git_url;
+
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 struct TestDir(PathBuf);
@@ -11,7 +14,7 @@ impl TestDir {
     fn new() -> Self {
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "vex-targeted-update-test-{}-{id}",
+            "vex targeted update test-{}-{id}#fixture",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("test directory must be created");
@@ -236,10 +239,6 @@ fn git_stdout(path: &Path, args: &[&str]) -> String {
         .expect("git output must be UTF-8")
         .trim()
         .to_string()
-}
-
-fn git_url(path: &Path) -> String {
-    format!("file://{}", path.to_string_lossy())
 }
 
 fn vex(path: &Path, args: &[&str]) -> Output {
