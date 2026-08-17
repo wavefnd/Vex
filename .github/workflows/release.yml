@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag (for example, v0.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Verify tag and source tree
+        id: release
+        shell: bash
+        run: |
+          python x.py verify-release
+          version="$(python x.py --version | awk '{print $2}')"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Run release validation
+        run: python x.py check
+
+  build:
+    name: Package / ${{ matrix.name }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux amd64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            extension: tar.gz
+          - name: Windows x64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: zip
+          - name: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            extension: tar.gz
+          - name: macOS Apple Silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+            extension: tar.gz
+          - name: Linux RISC-V
+            os: ubuntu-24.04
+            target: riscv64gc-unknown-linux-gnu
+            extension: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install RISC-V system tools
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-riscv64-linux-gnu qemu-user
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'riscv64gc-unknown-linux-gnu' && 'riscv64-linux-gnu-gcc' || '' }}
+        run: python x.py build ${{ matrix.target }}
+
+      - name: Package and smoke test release binary
+        run: python x.py package ${{ matrix.target }}
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/vex-*-${{ matrix.target }}.${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 14
+
+  draft-release:
+    name: Attest and create draft release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify complete archive set and write checksums
+        shell: bash
+        run: |
+          python x.py checksum \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            x86_64-pc-windows-msvc \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            riscv64gc-unknown-linux-gnu
+          cd dist
+          sha256sum --check SHA256SUMS
+
+      - name: Generate build provenance attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/vex-*.tar.gz
+            dist/vex-*.zip
+            dist/SHA256SUMS
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            --title "Vex $RELEASE_TAG" \
+            dist/vex-*.tar.gz \
+            dist/vex-*.zip \
+            dist/SHA256SUMS

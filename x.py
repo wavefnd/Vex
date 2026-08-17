@@ -195,6 +195,11 @@ def package_name(version: str, target: Target) -> str:
     return f"{BINARY_NAME}-v{version}-{target.triple}"
 
 
+def archive_path(version: str, target: Target, dist_dir: Path = DIST_DIR) -> Path:
+    extension = ".zip" if target.archive == "zip" else ".tar.gz"
+    return dist_dir / f"{package_name(version, target)}{extension}"
+
+
 def source_date_epoch() -> int:
     configured = os.environ.get("SOURCE_DATE_EPOCH")
     if configured is not None:
@@ -425,6 +430,36 @@ def write_checksums(archives: Iterable[Path], dist_dir: Path = DIST_DIR) -> Path
     return checksum_path
 
 
+def collect_release_archives(
+    targets: Iterable[Target], version: str, dist_dir: Path = DIST_DIR
+) -> list[Path]:
+    expected = [archive_path(version, target, dist_dir) for target in targets]
+    missing = [path.name for path in expected if not path.is_file()]
+    expected_names = {path.name for path in expected}
+    candidates = {
+        path.name
+        for pattern in (
+            f"{BINARY_NAME}-v{version}-*.tar.gz",
+            f"{BINARY_NAME}-v{version}-*.zip",
+        )
+        for path in dist_dir.glob(pattern)
+        if path.is_file()
+    }
+    unexpected = sorted(candidates - expected_names)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(sorted(missing))}")
+        if unexpected:
+            details.append(f"unexpected: {', '.join(unexpected)}")
+        raise ReleaseError(
+            "release archive set is incomplete or inconsistent "
+            f"({'; '.join(details)})\n"
+            "help: build and package exactly the requested release targets"
+        )
+    return expected
+
+
 def package_targets(targets: Iterable[Target], version: str, host: str) -> list[Path]:
     epoch = source_date_epoch()
     archives: list[Path] = []
@@ -465,6 +500,18 @@ def require_release_tag(version: str) -> None:
             f"official release must run from tag `{expected}`\n"
             f"help: create and check out the annotated `{expected}` tag"
         )
+    tag_type = capture_command(["git", "cat-file", "-t", f"refs/tags/{expected}"])
+    if tag_type != "tag":
+        raise ReleaseError(
+            f"official release tag `{expected}` must be annotated, not lightweight\n"
+            f"help: recreate `{expected}` with `git tag -s {expected}` or "
+            f"`git tag -a {expected}`"
+        )
+
+
+def verify_release_source(version: str) -> None:
+    require_clean_tree()
+    require_release_tag(version)
 
 
 def run_check_suite() -> None:
@@ -493,10 +540,23 @@ def command_package(args: argparse.Namespace) -> None:
     package_targets(targets, load_version(), detect_host_target())
 
 
+def command_checksum(args: argparse.Namespace) -> None:
+    targets = select_targets(args.targets)
+    checksum_path = write_checksums(
+        collect_release_archives(targets, load_version()),
+    )
+    status("Checksums", str(checksum_path.relative_to(ROOT)))
+
+
+def command_verify_release(_: argparse.Namespace) -> None:
+    version = load_version()
+    verify_release_source(version)
+    status("Verified", f"clean source at annotated tag v{version}")
+
+
 def command_release(args: argparse.Namespace) -> None:
     version = load_version()
-    require_clean_tree()
-    require_release_tag(version)
+    verify_release_source(version)
     targets = select_targets(args.targets)
     run_check_suite()
     build_targets(targets)
@@ -561,6 +621,17 @@ def create_parser(version: str) -> argparse.ArgumentParser:
     package = commands.add_parser("package", help="package existing release binaries")
     add_target_arguments(package)
     package.set_defaults(handler=command_package)
+
+    checksum = commands.add_parser(
+        "checksum", help="verify a complete archive set and write SHA256SUMS"
+    )
+    add_target_arguments(checksum)
+    checksum.set_defaults(handler=command_checksum)
+
+    verify_release = commands.add_parser(
+        "verify-release", help="verify clean source and the annotated version tag"
+    )
+    verify_release.set_defaults(handler=command_verify_release)
 
     release = commands.add_parser(
         "release", help="validate, build, and package an official tagged release"
