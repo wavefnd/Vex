@@ -174,6 +174,9 @@ python3 x.py package
 # Build or package one or more explicit targets.
 python3 x.py build x86_64-unknown-linux-gnu
 python3 x.py package x86_64-unknown-linux-gnu
+
+# Verify an assembled target set and regenerate its checksums.
+python3 x.py checksum x86_64-unknown-linux-gnu
 ```
 
 Archives contain the Vex executable together with `README.md`, `LICENSE`,
@@ -188,13 +191,24 @@ Cross-target builds still require the corresponding Rust target and native
 linker to be installed. `VEX_RELEASE_HOST` exists for release infrastructure
 that must override host-target detection; normal development should not set it.
 
-The existing `Makefile` remains available during the transition, but new
-release automation should use `x.py` so local builds and CI share one contract.
+`python3 x.py verify-release` checks that the source tree is clean and `HEAD`
+has the annotated `v<version>` tag required by the release workflow. The
+workflow builds every release target before creating one checksum manifest and
+a draft GitHub Release. It also generates GitHub build-provenance attestations;
+publishing the reviewed draft remains a separate maintainer action. See
+[RELEASING.md](RELEASING.md) for the complete procedure.
 
 Verify downloaded archives from the directory containing `SHA256SUMS`:
 
 ```sh
 sha256sum --check SHA256SUMS
+```
+
+Official release attestations can also be verified with GitHub CLI:
+
+```sh
+gh attestation verify vex-v0.0.1-x86_64-unknown-linux-gnu.tar.gz \
+  --repo wavefnd/Vex
 ```
 
 ## License
@@ -207,6 +221,7 @@ sha256sum --check SHA256SUMS
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Maintainers](MAINTAINERS)
 - [Security Policy](SECURITY.md)
+- [Release Process](RELEASING.md)
 - [Copyright](COPYRIGHT)
 - [Notice](NOTICE)
 - [AI Usage Policy](ai.txt)

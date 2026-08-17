@@ -85,7 +85,8 @@ remote-tracking refs remain unchanged.
 Release packages are created with `python3 x.py build` followed by
 `python3 x.py package`. Do not hand-edit `dist/` artifacts. The stricter
 `python3 x.py release` command is reserved for a clean commit carrying the exact
-`v<version>` tag.
+annotated `v<version>` tag. Maintainers must follow [RELEASING.md](RELEASING.md)
+for multi-platform artifact aggregation, attestation, and publication.
 
 ## Pull requests
 

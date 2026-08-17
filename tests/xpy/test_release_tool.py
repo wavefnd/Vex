@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -156,11 +157,46 @@ class ReleaseToolTests(unittest.TestCase):
             )
             self.assertNotIn(str(dist), "\n".join(lines))
 
+    def test_collect_release_archives_requires_exact_requested_set(self) -> None:
+        linux = release_tool.SUPPORTED_TARGETS["x86_64-unknown-linux-gnu"]
+        windows = release_tool.SUPPORTED_TARGETS["x86_64-pc-windows-msvc"]
+        with tempfile.TemporaryDirectory() as temporary:
+            dist = Path(temporary)
+            linux_archive = release_tool.archive_path("0.0.1", linux, dist)
+            windows_archive = release_tool.archive_path("0.0.1", windows, dist)
+            linux_archive.write_bytes(b"linux")
+
+            with self.assertRaisesRegex(
+                release_tool.ReleaseError,
+                rf"missing: {re.escape(windows_archive.name)}",
+            ):
+                release_tool.collect_release_archives(
+                    [linux, windows], "0.0.1", dist
+                )
+
+            windows_archive.write_bytes(b"windows")
+            self.assertEqual(
+                release_tool.collect_release_archives(
+                    [linux, windows], "0.0.1", dist
+                ),
+                [linux_archive, windows_archive],
+            )
+
+            extra = dist / "vex-v0.0.1-imaginary-target.tar.gz"
+            extra.write_bytes(b"extra")
+            with self.assertRaisesRegex(
+                release_tool.ReleaseError,
+                rf"unexpected: {re.escape(extra.name)}",
+            ):
+                release_tool.collect_release_archives(
+                    [linux, windows], "0.0.1", dist
+                )
+
     def test_release_requires_version_tag_at_head(self) -> None:
         with mock.patch.object(
             release_tool,
             "capture_command",
-            return_value="v0.0.1\nother-tag",
+            side_effect=["v0.0.1\nother-tag", "tag"],
         ):
             release_tool.require_release_tag("0.0.1")
 
@@ -170,6 +206,28 @@ class ReleaseToolTests(unittest.TestCase):
                 "official release must run from tag `v0.0.1`",
             ):
                 release_tool.require_release_tag("0.0.1")
+
+        with mock.patch.object(
+            release_tool,
+            "capture_command",
+            side_effect=["v0.0.1", "commit"],
+        ):
+            with self.assertRaisesRegex(
+                release_tool.ReleaseError,
+                "must be annotated, not lightweight",
+            ):
+                release_tool.require_release_tag("0.0.1")
+
+    def test_release_workflow_covers_every_supported_target(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        for target in release_tool.SUPPORTED_TARGETS:
+            self.assertIn(f"target: {target}", workflow)
+            self.assertGreaterEqual(workflow.count(target), 2)
+        self.assertIn("python x.py checksum", workflow)
+        self.assertIn("uses: actions/attest@v4", workflow)
+        self.assertIn("--draft", workflow)
 
     @staticmethod
     def make_package_inputs(root: Path, target: object, binary: bytes) -> None:

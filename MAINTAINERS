@@ -27,8 +27,9 @@ M: LunaStev <luna@lunastev.org>
 F: .github/
 F: Cargo.toml
 F: Cargo.lock
-F: Makefile
 F: x.py
+F: tests/xpy/
+F: RELEASING.md
 
 [Documentation and Community]
 M: LunaStev <luna@lunastev.org>
