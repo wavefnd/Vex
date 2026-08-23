@@ -45,6 +45,36 @@ class ReleaseToolTests(unittest.TestCase):
             )
             self.assertEqual(release_tool.load_version(manifest), "1.2.3-rc.1+build.7")
 
+    def test_third_party_license_inventory_covers_locked_registry_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            notice = Path(temporary) / "THIRD_PARTY_LICENSES.md"
+            lockfile = Path(temporary) / "Cargo.lock"
+            lockfile.write_text(
+                """version = 4
+
+[[package]]
+name = "example"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "local"
+version = "0.0.1"
+""",
+                encoding="utf-8",
+            )
+            notice.write_text(
+                "https://crates.io/crates/example/1.2.3\n", encoding="utf-8"
+            )
+            release_tool.validate_third_party_licenses(notice, lockfile)
+
+            notice.write_text("missing\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                release_tool.ReleaseError,
+                "missing from THIRD_PARTY_LICENSES.md: example 1.2.3",
+            ):
+                release_tool.validate_third_party_licenses(notice, lockfile)
+
     def test_select_targets_deduplicates_without_reordering(self) -> None:
         selected = release_tool.select_targets(
             [
@@ -228,6 +258,7 @@ class ReleaseToolTests(unittest.TestCase):
         self.assertIn("python x.py checksum", workflow)
         self.assertIn("uses: actions/attest@v4", workflow)
         self.assertIn("--draft", workflow)
+        self.assertIn("--notes-file RELEASE_NOTES.md", workflow)
 
     @staticmethod
     def make_package_inputs(root: Path, target: object, binary: bytes) -> None:

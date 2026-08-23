@@ -25,19 +25,20 @@ fn main() {
     }
 
     match args[0].as_str() {
-        "init" => {
-            let is_lib = args[1..].iter().any(|arg| arg == "--lib");
-            init(is_lib);
-        }
+        "init" => init(&args[1..]),
         "build" => build(BuildMode::Build, &args[1..]),
         "run" => run(&args[1..]),
         "check" => check(&args[1..]),
         "fetch" => fetch(false, &args[1..]),
         "update" => fetch(true, &args[1..]),
-        "info" => info(),
+        "info" => info(&args[1..]),
         "setup" => setup(&args[1..]),
-        "--version" | "-V" | "version" => version_vex(),
-        "--help" | "-h" | "help" => print_help(),
+        "--version" | "-V" | "version" if args.len() == 1 => version_vex(),
+        "--help" | "-h" | "help" if args.len() == 1 => print_help(),
+        "--version" | "-V" | "version" | "--help" | "-h" | "help" => {
+            eprintln!("error: unexpected argument `{}`", args[1]);
+            std::process::exit(2);
+        }
         unknown => {
             eprintln!("error: unknown command `{unknown}`");
             print_help();
@@ -47,6 +48,12 @@ fn main() {
 }
 
 fn setup(args: &[String]) {
+    if matches!(args, [help] if help == "-h" || help == "--help")
+        || matches!(args, [wavec, help] if wavec == "wavec" && (help == "-h" || help == "--help"))
+    {
+        println!("usage: vex setup wavec [--version <version>]");
+        return;
+    }
     if args.first().map(String::as_str) != Some("wavec") {
         eprintln!("error: usage: vex setup wavec [--version <version>]");
         std::process::exit(2);
@@ -58,8 +65,16 @@ fn setup(args: &[String]) {
     while i < args.len() {
         match args[i].as_str() {
             "--version" => {
+                if version.is_some() {
+                    eprintln!("error: `--version` may only be specified once");
+                    std::process::exit(2);
+                }
                 if i + 1 >= args.len() {
                     eprintln!("error: missing value for --version");
+                    std::process::exit(2);
+                }
+                if args[i + 1].is_empty() || args[i + 1].starts_with('-') {
+                    eprintln!("error: `--version` must be a version value, not an option");
                     std::process::exit(2);
                 }
                 version = Some(args[i + 1].as_str());

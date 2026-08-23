@@ -5,11 +5,36 @@ use std::path::Path;
 use crate::lockfile::{write_lockfile, Lockfile};
 use crate::manifest::{render_new_manifest, Manifest, MANIFEST_FILE};
 
-pub fn init(is_lib: bool) {
+pub fn init(args: &[String]) {
+    let is_lib = match parse_options(args) {
+        Ok(Some(is_lib)) => is_lib,
+        Ok(None) => {
+            println!("usage: vex init [--lib]");
+            return;
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("usage: vex init [--lib]");
+            std::process::exit(2);
+        }
+    };
     if let Err(err) = run_init(is_lib) {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
+}
+
+fn parse_options(args: &[String]) -> Result<Option<bool>, String> {
+    let mut is_lib = false;
+    for argument in args {
+        match argument.as_str() {
+            "--lib" if !is_lib => is_lib = true,
+            "--lib" => return Err("`--lib` may only be specified once".to_string()),
+            "-h" | "--help" if args.len() == 1 => return Ok(None),
+            unknown => return Err(format!("unknown Vex option `{unknown}`")),
+        }
+    }
+    Ok(Some(is_lib))
 }
 
 fn run_init(is_lib: bool) -> Result<(), String> {
@@ -66,5 +91,22 @@ fn get_username() -> Option<String> {
         env::var("USERNAME").ok()
     } else {
         env::var("USER").ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn init_options_do_not_treat_help_or_unknown_flags_as_creation() {
+        assert_eq!(parse_options(&strings(&["--help"])), Ok(None));
+        assert!(parse_options(&strings(&["--unknown"])).is_err());
+        assert!(parse_options(&strings(&["--lib", "--lib"])).is_err());
+        assert_eq!(parse_options(&strings(&["--lib"])), Ok(Some(true)));
     }
 }

@@ -27,6 +27,10 @@ struct VexBuildOptions {
 }
 
 pub fn build(mode: BuildMode, args: &[String]) {
+    if matches!(args, [help] if help == "-h" || help == "--help") {
+        println!("{}", build_usage(mode));
+        return;
+    }
     if let Err(err) = run_build(mode, args) {
         eprintln!("error: {err}");
         std::process::exit(1);
@@ -35,8 +39,8 @@ pub fn build(mode: BuildMode, args: &[String]) {
 
 fn run_build(mode: BuildMode, args: &[String]) -> Result<(), String> {
     let started = Instant::now();
-    let manifest = Manifest::load()?;
     let options = parse_vex_build_options(mode, args)?;
+    let manifest = Manifest::load()?;
     let default_input = resolve_default_input(&manifest, mode)?;
 
     let mut global_args = Vec::new();
@@ -147,7 +151,7 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
                 if i >= args.len() {
                     return Err("missing value for `--target`".to_string());
                 }
-                options.target = Some(args[i].clone());
+                set_target(&mut options, &args[i])?;
             }
             "--release" => options.release = true,
             "--dry-run" => options.dry_run = true,
@@ -155,7 +159,7 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
             "--offline" => options.offline = true,
             "-h" | "--help" => return Err(build_usage(mode).to_string()),
             _ if token.starts_with("--target=") => {
-                options.target = Some(token.trim_start_matches("--target=").to_string());
+                set_target(&mut options, token.trim_start_matches("--target="))?;
             }
             _ if token.starts_with('-') => {
                 return Err(format!(
@@ -173,6 +177,17 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
     }
 
     Ok(options)
+}
+
+fn set_target(options: &mut VexBuildOptions, target: &str) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("`--target` cannot be empty".to_string());
+    }
+    if options.target.is_some() {
+        return Err("`--target` may only be specified once".to_string());
+    }
+    options.target = Some(target.to_string());
+    Ok(())
 }
 
 fn build_usage(mode: BuildMode) -> &'static str {
@@ -303,5 +318,17 @@ mod tests {
         let err = parse_vex_build_options(BuildMode::Run, &strings(&["src/main.wave"]))
             .expect_err("Vex run is manifest-based");
         assert!(err.contains("vex.ws"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_and_duplicate_targets() {
+        for arguments in [
+            strings(&["--target="]),
+            strings(&["--target", ""]),
+            strings(&["--target", "host", "--target=other"]),
+        ] {
+            parse_vex_build_options(BuildMode::Build, &arguments)
+                .expect_err("invalid target options must be rejected");
+        }
     }
 }

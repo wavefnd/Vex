@@ -185,7 +185,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --verify-tag \
             --draft \
-            --generate-notes \
+            --notes-file RELEASE_NOTES.md \
             --title "Vex $RELEASE_TAG" \
             dist/vex-*.tar.gz \
             dist/vex-*.zip \
