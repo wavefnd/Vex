@@ -1,15 +1,7 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing annotated release tag (for example, v0.0.1)
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -18,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.repository }}-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -27,11 +19,12 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Install Rust toolchain
@@ -44,13 +37,40 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify tag and source tree
+      - name: Verify authoritative release source
         id: release
         shell: bash
         run: |
-          python x.py verify-release
+          if [[ "$GITHUB_REPOSITORY" != "wavefnd/Vex" ]]; then
+            echo "error: official releases must run in wavefnd/Vex, not $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "error: official releases must be dispatched from master, not $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          commit="$(git rev-parse HEAD)"
+          git fetch --force --tags origin
+          remote_master="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
+          if [[ -z "$remote_master" || "$commit" != "$remote_master" ]]; then
+            echo "error: release commit $commit is not current wavefnd/Vex:master ($remote_master)" >&2
+            exit 1
+          fi
+
           version="$(python x.py --version | awk '{print $2}')"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          tag="v${version}"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            tag_type="$(git cat-file -t "refs/tags/$tag")"
+            tag_commit="$(git rev-list -n 1 "$tag")"
+            if [[ "$tag_type" != "tag" || "$tag_commit" != "$commit" ]]; then
+              echo "error: existing $tag is not an annotated tag for release commit $commit" >&2
+              exit 1
+            fi
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Run release validation
         run: python x.py check
@@ -88,10 +108,10 @@ jobs:
             extension: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
 
       - name: Install RISC-V system tools
@@ -127,7 +147,7 @@ jobs:
           retention-days: 14
 
   draft-release:
-    name: Attest and create draft release
+    name: Tag, attest, and create draft release
     needs:
       - validate
       - build
@@ -137,10 +157,10 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
 
       - name: Install Python
@@ -168,6 +188,29 @@ jobs:
           cd dist
           sha256sum --check SHA256SUMS
 
+      - name: Create authoritative annotated release tag
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        shell: bash
+        run: |
+          git fetch --force --tags origin
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            tag_type="$(git cat-file -t "refs/tags/$RELEASE_TAG")"
+            tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+            if [[ "$tag_type" != "tag" || "$tag_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "error: existing $RELEASE_TAG is not an annotated tag for $RELEASE_COMMIT" >&2
+              exit 1
+            fi
+            echo "Reusing existing authoritative tag $RELEASE_TAG"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" "$RELEASE_COMMIT" -m "Vex $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          python x.py verify-release
+
       - name: Generate build provenance attestations
         uses: actions/attest@v4
         with:
@@ -182,11 +225,28 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         shell: bash
         run: |
-          gh release create "$RELEASE_TAG" \
-            --verify-tag \
-            --draft \
-            --notes-file RELEASE_NOTES.md \
-            --title "Vex $RELEASE_TAG" \
-            dist/vex-*.tar.gz \
-            dist/vex-*.zip \
-            dist/SHA256SUMS
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "error: release $RELEASE_TAG is already published" >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" \
+              --clobber \
+              dist/vex-*.tar.gz \
+              dist/vex-*.zip \
+              dist/SHA256SUMS
+            gh release edit "$RELEASE_TAG" \
+              --draft \
+              --notes-file RELEASE_NOTES.md \
+              --title "Vex $RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --notes-file RELEASE_NOTES.md \
+              --title "Vex $RELEASE_TAG" \
+              dist/vex-*.tar.gz \
+              dist/vex-*.zip \
+              dist/SHA256SUMS
+          fi

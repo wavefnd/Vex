@@ -239,11 +239,14 @@ linker to be installed. `VEX_RELEASE_HOST` exists for release infrastructure
 that must override host-target detection; normal development should not set it.
 
 `python3 x.py verify-release` checks that the source tree is clean and `HEAD`
-has the annotated `v<version>` tag required by the release workflow. The
-workflow builds every release target before creating one checksum manifest and
-a draft GitHub Release. It also generates GitHub build-provenance attestations;
-publishing the reviewed draft remains a separate maintainer action. See
-[RELEASING.md](RELEASING.md) for the complete procedure.
+has the annotated `v<version>` tag. For an official release, a maintainer
+dispatches the Release workflow from `wavefnd/Vex:master`; the workflow refuses
+forks and non-`master` refs. It validates and packages the exact upstream
+commit, verifies the complete archive set, and only then creates the
+authoritative annotated tag in `wavefnd/Vex`. It subsequently verifies that
+tag, generates GitHub build-provenance attestations, and prepares a draft
+GitHub Release. Publishing the reviewed draft remains a separate maintainer
+action. See [RELEASING.md](RELEASING.md) for the complete procedure.
 
 Verify downloaded archives from the directory containing `SHA256SUMS`:
 

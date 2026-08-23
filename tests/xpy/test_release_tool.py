@@ -248,7 +248,7 @@ version = "0.0.1"
             ):
                 release_tool.require_release_tag("0.0.1")
 
-    def test_release_workflow_covers_every_supported_target(self) -> None:
+    def test_release_workflow_covers_targets_and_creates_the_upstream_tag(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
@@ -259,6 +259,18 @@ version = "0.0.1"
         self.assertIn("uses: actions/attest@v4", workflow)
         self.assertIn("--draft", workflow)
         self.assertIn("--notes-file RELEASE_NOTES.md", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("  push:\n", workflow)
+        self.assertNotIn("    inputs:\n", workflow)
+        self.assertIn('GITHUB_REPOSITORY" != "wavefnd/Vex', workflow)
+        self.assertIn('git tag -a "$RELEASE_TAG"', workflow)
+        self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
+        self.assertIn("ref: ${{ needs.validate.outputs.commit }}", workflow)
+        self.assertIn("python x.py verify-release", workflow)
+        self.assertLess(
+            workflow.index("sha256sum --check SHA256SUMS"),
+            workflow.index('git tag -a "$RELEASE_TAG"'),
+        )
 
     @staticmethod
     def make_package_inputs(root: Path, target: object, binary: bytes) -> None:

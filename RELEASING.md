@@ -2,17 +2,21 @@
 
 This document is the maintainer procedure for producing an official Vex
 release. The release workflow builds reproducible archives from an existing
-annotated version tag, creates provenance attestations, and prepares a draft
-GitHub Release. It never publishes a release automatically.
+authoritative `master` commit, creates the version tag in `wavefnd/Vex` only
+after every target packages successfully, creates provenance attestations, and
+prepares a draft GitHub Release. It never publishes a release automatically.
 
 ## Release contract
 
 - `Cargo.toml` is the single source of truth for the Vex version.
 - The release tag must be the exact `v<version>` tag, point at the release
-  commit, and be annotated. A signed annotated tag is preferred.
+  commit, and be annotated. The upstream Release workflow creates it using the
+  GitHub Actions identity; maintainers do not push the official tag from a
+  local checkout or personal fork.
 - The release commit and committed `Cargo.lock` must be used without changes.
-- Every configured target must build and package successfully before a draft
-  release is created. Partial releases are not supported.
+- Every configured target must build and package successfully, and the complete
+  archive set must be verified, before the tag or draft release is created.
+  Partial releases are not supported.
 - Release archives and `SHA256SUMS` receive GitHub build-provenance
   attestations.
 - Publishing the reviewed draft is a separate, intentional maintainer action.
@@ -51,35 +55,32 @@ checklist before tagging:
 7. Merge the release-candidate pull request and wait for every required CI
    check on `master` to pass.
 
-Do not create a release tag from a feature branch, a dirty checkout, or a
-commit that has not passed the required checks.
+Do not create or push the release tag locally. The workflow guard ensures the
+official tag is created only in `wavefnd/Vex`, from its current `master`.
 
-## 2. Create and push the version tag
+## 2. Dispatch the upstream Release workflow
 
-Fetch the authoritative repository and verify the commit before tagging:
+After the release-candidate pull request is merged and the required `master`
+checks pass, dispatch `.github/workflows/release.yml` in the authoritative
+repository:
 
 ```sh
-git remote add upstream https://github.com/wavefnd/Vex.git  # if not already configured
-git fetch upstream
-git switch master
-git merge --ff-only upstream/master
-git status --short --branch
-git log -1 --oneline
-python3 x.py check
-git tag -s v0.0.1 -m "Vex v0.0.1"
-python3 x.py verify-release
-git push upstream v0.0.1
+gh workflow run release.yml --repo wavefnd/Vex --ref master
+gh run list --repo wavefnd/Vex --workflow release.yml --limit 1
 ```
 
-If signed tags are not available in the maintainer environment, `git tag -a`
-meets the automation's minimum annotated-tag requirement. Record that exception
-in the release notes. Never replace or move a published release tag.
+The workflow has no user-supplied tag input. It derives `v<version>` from the
+checked-in `Cargo.toml` and records the exact current `wavefnd/Vex:master`
+commit. It fails before building if it is dispatched in a fork, from another
+branch, or from a stale commit.
 
-Pushing `v*` to `wavefnd/Vex` starts `.github/workflows/release.yml`. Pushing a
-tag only to a personal fork does not create the official release. A maintainer
-can rerun the same workflow manually with an existing annotated tag; the
-workflow still checks that the tag matches `Cargo.toml` and the checked-out
-commit.
+The platform matrix builds and smoke-tests that exact commit without a tag.
+After all targets succeed and the complete archive set passes checksum
+verification, the final job creates an annotated tag through the
+`wavefnd/Vex` workflow token, verifies it with `python3 x.py verify-release`,
+attests the artifacts, and creates the draft release. A retry may reuse only an
+existing annotated tag that points to the same release commit; it never moves
+or replaces a tag. An already published release also cannot be overwritten.
 
 ## 3. Review the draft release
 
@@ -130,13 +131,16 @@ project smoke tests using assets downloaded from the public release.
 
 ## Failure and recovery
 
-- A failed matrix does not create a GitHub Release. Fix the problem in a new
-  commit and use a new pre-release version or tag; do not move a public tag.
-- If the workflow fails before the draft is created, inspect the failed target,
-  correct the release commit, and restart the release process with an
-  appropriate new tag.
-- If review finds a problem in an unpublished draft, delete the draft and its
-  unadvertised tag only after confirming no user depends on it, then prepare a
-  corrected release commit and tag.
+- A failed validation, build, package, or checksum step creates neither a tag
+  nor a GitHub Release. Fix the problem in a new pull request, merge it, and
+  dispatch the workflow again.
+- If the workflow fails after creating the tag but before creating the draft,
+  rerun it from the unchanged release commit. It safely reuses only the same
+  annotated tag. If source changes are required, increment the version; never
+  move an existing official tag.
+- If review finds a problem in an unpublished draft, do not publish it. Remove
+  the draft and unadvertised tag only after confirming no user depends on them,
+  then prepare a corrected release commit with a new version and dispatch the
+  upstream workflow again.
 - Never publish a partial set of target archives or hand-edit generated
   archives and checksums.
