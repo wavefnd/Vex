@@ -149,6 +149,21 @@ A dependency entry must use exactly one of `path` or `git`. Git dependencies may
 
 Fetched Git dependencies are stored under `.vex/deps/<name>`. Every fetched dependency must contain a `vex.ws` file at its root. Dependency manifests are resolved recursively, and a package name must identify one source and version requirement across the graph.
 
+Every dependency is a library package: its manifest must set `lib = true` and
+its canonical entry is `src/lib.wave`. Wave source imports the package name,
+not the entry filename:
+
+```wave
+import("local_math");
+import("local_math::vector");
+import("local_math")::{sum, Point};
+```
+
+The first form resolves `local_math/src/lib.wave`; the second resolves
+`local_math/src/vector.wave`. Vex passes exact mappings for every direct and
+transitive dependency to `wavec`, and only `pub` declarations are visible to
+consumers.
+
 On the first `vex fetch`, build, run, or check, Vex resolves each Git selector to an exact commit and records the complete transitive graph in `vex.lock`. Later commands reuse those commits without updating branches or tags. Run `vex update` explicitly to refresh every Git dependency and rewrite the lockfile.
 
 Pass one or more package names to update only those packages, including transitive dependencies. Unrelated packages keep their exact locked commits and are not fetched. If an updated package changes its dependencies, Vex recalculates that part of the graph while preserving unrelated locked packages.

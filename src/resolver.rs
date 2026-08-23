@@ -338,6 +338,21 @@ impl Resolver<'_> {
                 package_manifest.name
             ));
         }
+        if !package_manifest.lib {
+            return Err(format!(
+                "dependency `{}` is not a library package\nhelp: set `lib = true` in `{}` and provide `src/lib.wave`",
+                dependency.name,
+                manifest_path.display()
+            ));
+        }
+        let library_entry = resolved_path.join(package_manifest.default_entry_path());
+        if !library_entry.is_file() {
+            return Err(format!(
+                "dependency `{}` has no canonical library entry `{}`\nhelp: library packages must expose `src/lib.wave`",
+                dependency.name,
+                library_entry.display()
+            ));
+        }
         if let Some(required) = dependency.version.as_deref() {
             if package_manifest.version != required {
                 return Err(format!(
