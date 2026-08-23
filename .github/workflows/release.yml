@@ -1,24 +1,32 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: Existing annotated release tag (for example, v0.0.1)
+      version:
+        description: "Cargo version without the v prefix (for example: 0.0.1)"
         required: true
         type: string
+      draft:
+        description: "Create the GitHub release as a draft"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_VERSION: ${{ inputs.version }}
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: manual-release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -27,11 +35,12 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Install Rust toolchain
@@ -44,13 +53,48 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify tag and source tree
+      - name: Verify authoritative release source
         id: release
         shell: bash
         run: |
-          python x.py verify-release
-          version="$(python x.py --version | awk '{print $2}')"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          if [[ "$GITHUB_REPOSITORY" != "wavefnd/Vex" ]]; then
+            echo "error: official releases must run in wavefnd/Vex, not $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "error: official releases must be dispatched from master, not $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          commit="$(git rev-parse HEAD)"
+          git fetch --force --tags origin
+          remote_master="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
+          if [[ -z "$remote_master" || "$commit" != "$remote_master" ]]; then
+            echo "error: release commit $commit is not current wavefnd/Vex:master ($remote_master)" >&2
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: invalid release version: $RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          cargo_version="$(python x.py --version | awk '{print $2}')"
+          if [[ "$cargo_version" != "$RELEASE_VERSION" ]]; then
+            echo "error: Cargo.toml version is $cargo_version, input is $RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          tag="v${RELEASE_VERSION}"
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]]; then
+            echo "error: tag already exists in wavefnd/Vex: $tag" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Run release validation
         run: python x.py check
@@ -88,10 +132,10 @@ jobs:
             extension: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
 
       - name: Install RISC-V system tools
@@ -126,21 +170,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  draft-release:
-    name: Attest and create draft release
+  publish:
+    name: Create GitHub release
     needs:
       - validate
       - build
     runs-on: ubuntu-24.04
     permissions:
-      attestations: write
       contents: write
-      id-token: write
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
 
       - name: Install Python
@@ -158,6 +200,8 @@ jobs:
       - name: Verify complete archive set and write checksums
         shell: bash
         run: |
+          set -euo pipefail
+
           python x.py checksum \
             x86_64-unknown-linux-gnu \
             aarch64-unknown-linux-gnu \
@@ -168,25 +212,32 @@ jobs:
           cd dist
           sha256sum --check SHA256SUMS
 
-      - name: Generate build provenance attestations
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            dist/vex-*.tar.gz
-            dist/vex-*.zip
-            dist/SHA256SUMS
-
-      - name: Create draft GitHub Release
+      - name: Create GitHub release and tag
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         shell: bash
         run: |
-          gh release create "$RELEASE_TAG" \
-            --verify-tag \
-            --draft \
-            --generate-notes \
-            --title "Vex $RELEASE_TAG" \
-            dist/vex-*.tar.gz \
-            dist/vex-*.zip \
+          set -euo pipefail
+
+          args=(
+            release create "$RELEASE_TAG"
+            dist/vex-*.tar.gz
+            dist/vex-*.zip
             dist/SHA256SUMS
+            --repo "$GITHUB_REPOSITORY"
+            --target "$RELEASE_COMMIT"
+            --title "Vex $RELEASE_TAG"
+            --generate-notes
+          )
+
+          if [[ "${{ inputs.draft }}" == "true" ]]; then
+            args+=(--draft)
+          fi
+
+          if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh "${args[@]}"

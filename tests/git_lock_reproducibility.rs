@@ -71,7 +71,7 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
     assert!(first_lock.contains(&format!("commit = \"{middle_commit}\"")));
     assert!(first_lock.contains("dependencies = [\"leaf\"]"));
 
-    fs::write(leaf.join("CHANGELOG.md"), "new leaf revision\n")
+    fs::write(leaf.join("REVISION.txt"), "new leaf revision\n")
         .expect("leaf update must be written");
     let leaf_updated = commit_all(&leaf, "update leaf");
     assert_ne!(leaf_initial, leaf_updated);

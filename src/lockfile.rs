@@ -140,14 +140,18 @@ fn parse_package(value: &WsonValue) -> Result<LockedPackage, String> {
             requested: required_string(object, "path")?,
             resolved: PathBuf::from(required_string(object, "resolved")?),
         },
-        "git" => LockedSource::Git {
-            url: required_string(object, "git")?,
-            branch: optional_string(object, "branch")?,
-            tag: optional_string(object, "tag")?,
-            rev: optional_string(object, "rev")?,
-            commit: required_string(object, "commit")?,
-            resolved: PathBuf::from(required_string(object, "resolved")?),
-        },
+        "git" => {
+            let commit = required_string(object, "commit")?;
+            validate_commit(&commit, &name)?;
+            LockedSource::Git {
+                url: required_string(object, "git")?,
+                branch: optional_string(object, "branch")?,
+                tag: optional_string(object, "tag")?,
+                rev: optional_string(object, "rev")?,
+                commit,
+                resolved: PathBuf::from(required_string(object, "resolved")?),
+            }
+        }
         other => {
             return Err(format!(
                 "unknown lockfile source `{other}` for package `{name}`"
@@ -161,6 +165,15 @@ fn parse_package(value: &WsonValue) -> Result<LockedPackage, String> {
         source,
         dependencies,
     })
+}
+
+fn validate_commit(commit: &str, package: &str) -> Result<(), String> {
+    if matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    Err(format!(
+        "lockfile package `{package}` has invalid Git commit `{commit}`; expected a full hexadecimal object ID"
+    ))
 }
 
 fn required_string(object: &WsonMap, key: &str) -> Result<String, String> {
@@ -287,7 +300,7 @@ mod tests {
                     branch: Some("main".to_string()),
                     tag: None,
                     rev: None,
-                    commit: "0123456789abcdef".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
                     resolved: PathBuf::from(".vex/deps/math"),
                 },
                 dependencies: vec!["core".to_string()],
@@ -304,5 +317,25 @@ mod tests {
         let parsed = parse_lockfile("{ version = 1, package = [] }")
             .expect("legacy lockfile should trigger regeneration");
         assert!(parsed.packages.is_empty());
+    }
+
+    #[test]
+    fn rejects_non_object_id_git_commits() {
+        let err = parse_lockfile(
+            r#"{
+                version = 2,
+                package = [{
+                    name = "bad",
+                    version = "1.0.0",
+                    source = "git",
+                    git = "https://example.com/bad.git",
+                    commit = "--help",
+                    resolved = ".vex/deps/bad",
+                    dependencies = []
+                }]
+            }"#,
+        )
+        .expect_err("Git commits must be full object IDs");
+        assert!(err.contains("invalid Git commit"), "{err}");
     }
 }

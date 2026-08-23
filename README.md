@@ -6,12 +6,15 @@ Vex is designed to sit above `wavec` in the same way Cargo sits above `rustc`: V
 
 ## Requirements
 
-- Rust toolchain for building Vex from source
 - `wavec` compatible with the `build --dry-run --error-format=json` schema v1 contract
 - `git` when using Git dependencies
+- Rust toolchain only when building Vex from source
 - Python 3.11 or newer when using the release tooling
 
 Vex runs `wavec` from `PATH` by default. Set `VEX_WAVEC=/path/to/wavec` to use a specific compiler binary.
+Vex v0.0.1 is tested with `wavec 0.2.0-pre-beta`; support for schema v1 is the
+authoritative compatibility requirement. Vex reports a schema mismatch before
+the real build and suggests selecting another compiler with `VEX_WAVEC`.
 
 ## Platform validation
 
@@ -31,8 +34,46 @@ the release workflow also passes package and clean-environment smoke tests.
 Windows release artifacts use the MSVC target. A Windows GNU artifact is not
 part of the v0.0.1 scope. RISC-V remains experimental because its test coverage
 is limited to cross-build and QEMU smoke rather than the complete integration
-suite. Final minimum OS and glibc versions will be fixed by the release workflow
-before v0.0.1 is tagged.
+suite.
+
+The v0.0.1 Linux GNU archives are built on Ubuntu 24.04 and require a glibc-based
+system; Ubuntu 24.04 is the supported runtime baseline. Windows artifacts are
+validated on the GitHub Windows Server 2025 runner, and macOS artifacts on
+macOS 15. Older operating systems and other distributions are best effort for
+this first release.
+
+## Install
+
+Download the archive and `SHA256SUMS` for your platform from the
+[GitHub release](https://github.com/wavefnd/Vex/releases/tag/v0.0.1). Verify the
+download before extracting it:
+
+```sh
+sha256sum --check SHA256SUMS
+tar -xzf vex-v0.0.1-x86_64-unknown-linux-gnu.tar.gz
+install -m 0755 vex-v0.0.1-x86_64-unknown-linux-gnu/vex ~/.local/bin/vex
+vex --version
+```
+
+On Windows, compare `Get-FileHash <archive> -Algorithm SHA256` with the matching
+line in `SHA256SUMS`, extract the zip, and place `vex.exe` in a directory on
+`PATH`.
+
+To build from source instead:
+
+```sh
+git clone https://github.com/wavefnd/Vex.git
+cd Vex
+cargo build --locked --release
+install -m 0755 target/release/vex ~/.local/bin/vex
+```
+
+Install `wavec` separately and make it available on `PATH`, or set
+`VEX_WAVEC` to its full path. `vex setup wavec` is an explicit convenience
+command that downloads and executes the official installer from
+`wave-lang.dev`; review that trust and network boundary before using it. A
+specific compiler can be requested with `vex setup wavec --version
+0.2.0-pre-beta`.
 
 ## Commands
 
@@ -181,8 +222,9 @@ python3 x.py checksum x86_64-unknown-linux-gnu
 
 Archives contain the Vex executable together with `README.md`, `LICENSE`,
 `NOTICE`, and `COPYRIGHT`. Their file order, permissions, owners, and timestamps
-are normalized. Set `SOURCE_DATE_EPOCH` to an explicit non-negative Unix
-timestamp when reproducing an artifact outside the tagged source revision.
+are normalized. Set
+`SOURCE_DATE_EPOCH` to an explicit non-negative Unix timestamp when reproducing
+an artifact outside the tagged source revision.
 
 `python3 x.py release [<target>...]` is intentionally stricter than separate
 build and package commands. It runs the complete validation suite and succeeds
@@ -192,23 +234,20 @@ linker to be installed. `VEX_RELEASE_HOST` exists for release infrastructure
 that must override host-target detection; normal development should not set it.
 
 `python3 x.py verify-release` checks that the source tree is clean and `HEAD`
-has the annotated `v<version>` tag required by the release workflow. The
-workflow builds every release target before creating one checksum manifest and
-a draft GitHub Release. It also generates GitHub build-provenance attestations;
-publishing the reviewed draft remains a separate maintainer action. See
+has the annotated `v<version>` tag for local release reproduction. For an
+official release, a maintainer dispatches the Release workflow from
+`wavefnd/Vex:master`; the workflow refuses forks and non-`master` refs. It
+validates and packages the exact upstream commit and verifies the complete
+archive set. Its final
+`gh release create --target ... --generate-notes` call creates the tag in
+`wavefnd/Vex` and generates the GitHub release notes from merged changes.
+Publishing a reviewed draft remains a separate maintainer action. See
 [RELEASING.md](RELEASING.md) for the complete procedure.
 
 Verify downloaded archives from the directory containing `SHA256SUMS`:
 
 ```sh
 sha256sum --check SHA256SUMS
-```
-
-Official release attestations can also be verified with GitHub CLI:
-
-```sh
-gh attestation verify vex-v0.0.1-x86_64-unknown-linux-gnu.tar.gz \
-  --repo wavefnd/Vex
 ```
 
 ## License

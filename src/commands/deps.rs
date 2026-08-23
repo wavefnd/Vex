@@ -13,6 +13,17 @@ struct DependencyOptions {
 }
 
 pub fn fetch(update: bool, args: &[String]) {
+    if matches!(args, [help] if help == "-h" || help == "--help") {
+        println!(
+            "usage: vex {}",
+            if update {
+                "update [<package>...]"
+            } else {
+                "fetch [--locked] [--offline]"
+            }
+        );
+        return;
+    }
     if let Err(err) = run_fetch(update, args) {
         eprintln!("error: {err}");
         std::process::exit(1);

@@ -218,7 +218,7 @@ class ReleaseToolTests(unittest.TestCase):
             ):
                 release_tool.require_release_tag("0.0.1")
 
-    def test_release_workflow_covers_every_supported_target(self) -> None:
+    def test_release_workflow_covers_targets_and_creates_the_upstream_tag(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
@@ -226,8 +226,22 @@ class ReleaseToolTests(unittest.TestCase):
             self.assertIn(f"target: {target}", workflow)
             self.assertGreaterEqual(workflow.count(target), 2)
         self.assertIn("python x.py checksum", workflow)
-        self.assertIn("uses: actions/attest@v4", workflow)
         self.assertIn("--draft", workflow)
+        self.assertIn("--generate-notes", workflow)
+        self.assertIn('--target "$RELEASE_COMMIT"', workflow)
+        self.assertIn('--repo "$GITHUB_REPOSITORY"', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("  push:\n", workflow)
+        self.assertIn("    inputs:\n", workflow)
+        self.assertIn("version:", workflow)
+        self.assertIn('GITHUB_REPOSITORY" != "wavefnd/Vex', workflow)
+        self.assertNotIn("git tag", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertIn("ref: ${{ needs.validate.outputs.commit }}", workflow)
+        self.assertLess(
+            workflow.index("sha256sum --check SHA256SUMS"),
+            workflow.index("--generate-notes"),
+        )
 
     @staticmethod
     def make_package_inputs(root: Path, target: object, binary: bytes) -> None:

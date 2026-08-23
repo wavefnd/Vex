@@ -1,10 +1,14 @@
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const UNIX_INSTALLER_URL: &str = "https://wave-lang.dev/install.sh";
 const WINDOWS_INSTALLER_URL: &str = "https://wave-lang.dev/install.ps1";
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn install_wavec(version: Option<&str>) {
     if let Err(err) = run_install_wavec(version) {
@@ -23,22 +27,32 @@ fn run_install_wavec(version: Option<&str>) -> Result<(), String> {
 
     println!("installing wavec {display_version}");
 
-    let cleanup_path;
-    let mut child = if cfg!(windows) {
-        cleanup_path = Some(download_windows_installer()?);
-        spawn_windows_installer(cleanup_path.as_ref().unwrap(), &installer_args)?
+    let installer = if cfg!(windows) {
+        download_windows_installer()?
     } else {
-        cleanup_path = Some(download_unix_installer()?);
-        spawn_unix_installer(cleanup_path.as_ref().unwrap(), &installer_args)?
+        download_unix_installer()?
+    };
+    let child = if cfg!(windows) {
+        spawn_windows_installer(&installer, &installer_args)
+    } else {
+        spawn_unix_installer(&installer, &installer_args)
+    };
+    let mut child = match child {
+        Ok(child) => child,
+        Err(err) => {
+            let _ = fs::remove_file(&installer);
+            return Err(err);
+        }
     };
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("failed to wait for wavec installer: {e}"))?;
-
-    if let Some(path) = cleanup_path {
-        let _ = fs::remove_file(path);
-    }
+    let status = child.wait();
+    fs::remove_file(&installer).map_err(|e| {
+        format!(
+            "failed to remove temporary wavec installer `{}`: {e}",
+            installer.display()
+        )
+    })?;
+    let status = status.map_err(|e| format!("failed to wait for wavec installer: {e}"))?;
 
     if status.success() {
         println!("wavec installed successfully");
@@ -56,15 +70,22 @@ fn installer_args(version: Option<&str>) -> Vec<String> {
 }
 
 fn download_unix_installer() -> Result<PathBuf, String> {
-    let script = env::temp_dir().join(format!("wave-install-{}.sh", std::process::id()));
+    let (script, output) = create_installer_file("sh")?;
     let status = Command::new("curl")
-        .args(["-fsSL", UNIX_INSTALLER_URL, "-o"])
-        .arg(&script)
+        .args(["-fsSL", UNIX_INSTALLER_URL])
         .stdin(Stdio::null())
-        .status()
-        .map_err(|e| format!("failed to start curl for wavec installer: {e}"))?;
+        .stdout(Stdio::from(output))
+        .status();
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = fs::remove_file(&script);
+            return Err(format!("failed to start curl for wavec installer: {error}"));
+        }
+    };
 
     if !status.success() {
+        let _ = fs::remove_file(&script);
         return Err(format!("failed to download wavec installer: {status}"));
     }
 
@@ -81,7 +102,8 @@ fn spawn_unix_installer(script: &PathBuf, args: &[String]) -> Result<std::proces
 }
 
 fn download_windows_installer() -> Result<PathBuf, String> {
-    let script = env::temp_dir().join(format!("wave-install-{}.ps1", std::process::id()));
+    let (script, output) = create_installer_file("ps1")?;
+    drop(output);
     let shell = windows_shell();
     let status = Command::new(shell)
         .args([
@@ -94,14 +116,48 @@ fn download_windows_installer() -> Result<PathBuf, String> {
         ])
         .arg(&script)
         .stdin(Stdio::null())
-        .status()
-        .map_err(|e| format!("failed to start PowerShell for wavec installer download: {e}"))?;
+        .status();
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = fs::remove_file(&script);
+            return Err(format!(
+                "failed to start PowerShell for wavec installer download: {error}"
+            ));
+        }
+    };
 
     if !status.success() {
+        let _ = fs::remove_file(&script);
         return Err(format!("failed to download wavec installer: {status}"));
     }
 
     Ok(script)
+}
+
+fn create_installer_file(extension: &str) -> Result<(PathBuf, File), String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for _ in 0..100 {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "vex-wave-install-{}-{timestamp}-{id}.{extension}",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create temporary wavec installer `{}`: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Err("failed to allocate a unique temporary path for the wavec installer".to_string())
 }
 
 fn spawn_windows_installer(
@@ -122,5 +178,32 @@ fn windows_shell() -> &'static str {
         "powershell.exe"
     } else {
         "pwsh"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installer_arguments_preserve_an_explicit_version() {
+        assert_eq!(installer_args(None), ["latest"]);
+        assert_eq!(
+            installer_args(Some("0.2.0-pre-beta")),
+            ["--version", "0.2.0-pre-beta"]
+        );
+    }
+
+    #[test]
+    fn installer_temporary_files_are_unique_and_exclusive() {
+        let (first_path, first_file) =
+            create_installer_file("test").expect("first temporary installer must be created");
+        let (second_path, second_file) =
+            create_installer_file("test").expect("second temporary installer must be created");
+        assert_ne!(first_path, second_path);
+        drop(first_file);
+        drop(second_file);
+        fs::remove_file(first_path).expect("first temporary installer must be removed");
+        fs::remove_file(second_path).expect("second temporary installer must be removed");
     }
 }

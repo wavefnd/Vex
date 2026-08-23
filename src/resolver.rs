@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use crate::lockfile::{
@@ -99,9 +99,11 @@ pub fn resolve(manifest: &Manifest, options: ResolveOptions) -> Result<Resolutio
     let dep_root = root.join(".vex/deps");
     let locked = options.locked;
     let dry_run = options.dry_run;
+    validate_managed_root(&root, &dep_root)?;
     if !options.dry_run {
         fs::create_dir_all(&dep_root)
             .map_err(|e| format!("failed to create `{}`: {e}", dep_root.display()))?;
+        validate_managed_root(&root, &dep_root)?;
     }
 
     let mut resolver = Resolver {
@@ -302,7 +304,7 @@ impl Resolver<'_> {
                 let resolved = resolve_path(path, parent_manifest);
                 let source = LockedSource::Path {
                     requested: path.clone(),
-                    resolved: resolved.clone(),
+                    resolved: relative_to_root(&resolved, &self.root),
                 };
                 (resolved, source)
             }
@@ -453,7 +455,12 @@ impl Resolver<'_> {
             "refs/remotes/origin/HEAD^{commit}".to_string()
         };
         let commit = git_stdout(
-            git_command_in(destination).args(["rev-parse", "--verify", &reference]),
+            git_command_in(destination).args([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &reference,
+            ]),
             "resolve Git dependency reference",
         )?;
         checkout_commit(destination, &commit)?;
@@ -481,12 +488,45 @@ fn resolve_path(path: &str, manifest_path: &Path) -> PathBuf {
 }
 
 fn relative_to_root(path: &Path, root: &Path) -> PathBuf {
-    path.strip_prefix(root)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf())
+    if let Ok(relative) = path.strip_prefix(root) {
+        return relative.to_path_buf();
+    }
+
+    let path_components = path.components().collect::<Vec<_>>();
+    let root_components = root.components().collect::<Vec<_>>();
+    let common = path_components
+        .iter()
+        .zip(&root_components)
+        .take_while(|(path_component, root_component)| path_component == root_component)
+        .count();
+
+    let same_root = common > 0
+        && !matches!(
+            (path_components.get(common), root_components.get(common)),
+            (Some(Component::Prefix(_)), _) | (_, Some(Component::Prefix(_)))
+        );
+    if !same_root {
+        return path.to_path_buf();
+    }
+
+    let mut relative = PathBuf::new();
+    for component in &root_components[common..] {
+        if matches!(component, Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &path_components[common..] {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative
+    }
 }
 
 fn ensure_repository(destination: &Path, url: &str, name: &str) -> Result<(), String> {
+    validate_managed_checkout_path(destination)?;
     if destination.exists() {
         if !destination.join(".git").is_dir() {
             return Err(format!(
@@ -507,7 +547,7 @@ fn ensure_repository(destination: &Path, url: &str, name: &str) -> Result<(), St
     let destination = git_cli_path(destination);
     run_git(
         Command::new("git")
-            .args(["clone", url])
+            .args(["-c", "protocol.ext.allow=never", "clone", "--", url])
             .arg(destination.as_ref()),
         "clone Git dependency",
     )
@@ -519,6 +559,7 @@ fn require_local_repository(
     name: &str,
     commit: &str,
 ) -> Result<(), String> {
+    validate_managed_checkout_path(destination)?;
     if !destination.join(".git").is_dir() {
         return Err(format!(
             "locked dependency `{name}` is not available locally in offline mode\n\nCaused by:\n  checkout `{}` is missing\n\nhelp: run `vex fetch` while online",
@@ -565,6 +606,7 @@ fn git_has_commit(destination: &Path, commit: &str) -> Result<bool, String> {
 }
 
 fn require_checkout_at(destination: &Path, url: &str, commit: &str) -> Result<(), String> {
+    validate_managed_checkout_path(destination)?;
     if !destination.join(".git").is_dir() {
         return Err(format!(
             "locked Git dependency is not available at `{}`\nhelp: run `vex fetch`",
@@ -613,8 +655,35 @@ fn checkout_commit(destination: &Path, commit: &str) -> Result<(), String> {
 
 fn git_command_in(destination: &Path) -> Command {
     let mut command = Command::new("git");
-    command.arg("-C").arg(git_cli_path(destination).as_ref());
     command
+        .args(["-c", "protocol.ext.allow=never", "-C"])
+        .arg(git_cli_path(destination).as_ref());
+    command
+}
+
+fn validate_managed_root(root: &Path, dep_root: &Path) -> Result<(), String> {
+    reject_symbolic_link(&root.join(".vex"), "managed Vex directory")?;
+    reject_symbolic_link(dep_root, "managed dependency directory")
+}
+
+fn validate_managed_checkout_path(destination: &Path) -> Result<(), String> {
+    reject_symbolic_link(destination, "managed dependency checkout")?;
+    reject_symbolic_link(
+        &destination.join(".git"),
+        "managed dependency Git directory",
+    )
+}
+
+fn reject_symbolic_link(path: &Path, label: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "{label} `{}` must not be a symbolic link\nhelp: replace the link with a real directory before running Vex",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to inspect `{}`: {error}", path.display())),
+    }
 }
 
 fn git_cli_path(path: &Path) -> Cow<'_, Path> {
@@ -713,6 +782,45 @@ mod tests {
             version: Some("1.0.0".to_string()),
         };
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn paths_outside_the_project_are_locked_relative_to_the_project() {
+        let root = Path::new("/workspace/app");
+        assert_eq!(
+            relative_to_root(Path::new("/workspace/dep"), root),
+            PathBuf::from("../dep")
+        );
+        assert_eq!(
+            relative_to_root(Path::new("/workspace/app/.vex/deps/remote"), root),
+            PathBuf::from(".vex/deps/remote")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_dependency_links_are_rejected() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock must be after the Unix epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("vex-managed-link-test-{}-{id}", std::process::id()));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&root).expect("test project must be created");
+        fs::create_dir_all(&outside).expect("outside directory must be created");
+        symlink(&outside, root.join(".vex")).expect("test link must be created");
+
+        let error = validate_managed_root(&root, &root.join(".vex/deps"))
+            .expect_err("managed root symlinks must be rejected");
+        assert!(error.contains("must not be a symbolic link"), "{error}");
+
+        fs::remove_file(root.join(".vex")).expect("test link must be removed");
+        fs::remove_dir_all(root).expect("test project must be removed");
+        fs::remove_dir_all(outside).expect("outside directory must be removed");
     }
 
     #[cfg(windows)]

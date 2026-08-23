@@ -69,10 +69,10 @@ fn targeted_update_preserves_unrelated_commits_and_fetches() {
     assert!(String::from_utf8_lossy(&offline_update.stderr)
         .contains("`--offline` cannot be used with `vex update`"));
 
-    fs::write(alpha.join("CHANGELOG.md"), "new alpha revision\n")
+    fs::write(alpha.join("REVISION.txt"), "new alpha revision\n")
         .expect("alpha update must be written");
     let alpha_updated = commit_all(&alpha, "update alpha");
-    fs::write(beta.join("CHANGELOG.md"), "new beta revision\n")
+    fs::write(beta.join("REVISION.txt"), "new beta revision\n")
         .expect("beta update must be written");
     let beta_updated = commit_all(&beta, "update beta");
 
@@ -143,7 +143,7 @@ fn targeted_update_accepts_transitive_packages_and_recalculates_their_graph() {
     create_package(&app, "app", &[("middle", git_url(&middle), Some("master"))]);
     assert_success(&vex(&app, &["fetch"]), "initial transitive fetch");
 
-    fs::write(leaf.join("CHANGELOG.md"), "new leaf revision\n")
+    fs::write(leaf.join("REVISION.txt"), "new leaf revision\n")
         .expect("leaf update must be written");
     let leaf_updated = commit_all(&leaf, "update leaf");
 
