@@ -172,7 +172,9 @@ fn targeted_update_accepts_transitive_packages_and_recalculates_their_graph() {
 }
 
 fn create_package(path: &Path, name: &str, dependencies: &[(&str, String, Option<&str>)]) {
-    fs::create_dir_all(path).expect("package directory must be created");
+    fs::create_dir_all(path.join("src")).expect("package source directory must be created");
+    fs::write(path.join("src/lib.wave"), "pub fun package_marker() {}\n")
+        .expect("library entry must be written");
     let dependency_entries = dependencies
         .iter()
         .map(|(dependency, url, branch)| match branch {

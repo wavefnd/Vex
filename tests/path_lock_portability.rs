@@ -61,7 +61,12 @@ fn path_lock_survives_moving_the_same_relative_package_tree() {
 
 fn create_tree(root: &Path) {
     fs::create_dir_all(root.join("app")).expect("app directory must be created");
-    fs::create_dir_all(root.join("dep")).expect("dependency directory must be created");
+    fs::create_dir_all(root.join("dep/src")).expect("dependency directory must be created");
+    fs::write(
+        root.join("dep/src/lib.wave"),
+        "pub fun package_marker() {}\n",
+    )
+    .expect("dependency library entry must be written");
     fs::write(
         root.join("dep/vex.ws"),
         "{\n    name = \"dep\",\n    version = 0.1.0,\n    lib = true,\n    dependencies = []\n}\n",

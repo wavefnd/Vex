@@ -105,6 +105,67 @@ fn vex_uses_path_and_override_wavec_and_rejects_unknown_schema() {
     );
 }
 
+#[test]
+fn vex_passes_direct_and_transitive_library_mappings_to_wavec() {
+    let fixture = TestDir::new();
+    let project = fixture.0.join("project");
+    let add = fixture.0.join("add");
+    let math = fixture.0.join("math");
+    for package in [&project, &add, &math] {
+        fs::create_dir_all(package.join("src")).unwrap();
+    }
+
+    fs::write(
+        math.join("vex.ws"),
+        "{ name = \"math\", version = 0.1.0, lib = true, dependencies = [] }\n",
+    )
+    .unwrap();
+    fs::write(
+        math.join("src/lib.wave"),
+        "pub fun double(value: i32) -> i32 { return value * 2; }\n",
+    )
+    .unwrap();
+    fs::write(
+        add.join("vex.ws"),
+        "{ name = \"add\", version = 0.1.0, lib = true, dependencies = [{ name = \"math\", path = \"../math\" }] }\n",
+    )
+    .unwrap();
+    fs::write(
+        add.join("src/lib.wave"),
+        "import(\"math\");\npub fun sum(a: i32, b: i32) -> i32 { return a + b; }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("vex.ws"),
+        "{ name = \"app\", version = 0.1.0, dependencies = [{ name = \"add\", path = \"../add\" }] }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/main.wave"),
+        "import(\"add\")::{sum};\nfun main() { var value: i32 = sum(1, 2); }\n",
+    )
+    .unwrap();
+
+    let fake = compile_fake_wavec(&fixture.0);
+    let log = fixture.0.join("dependency.log");
+    let output = Command::new(env!("CARGO_BIN_EXE_vex"))
+        .arg("check")
+        .current_dir(&project)
+        .env("VEX_WAVEC", &fake)
+        .env("FAKE_WAVEC_LOG", &log)
+        .output()
+        .expect("Vex dependency check must start");
+    assert_success(&output, "Vex dependency check");
+
+    let invocations = fs::read_to_string(log).unwrap();
+    for package in ["add", "math"] {
+        let path = Path::new("..").join(package);
+        let expected = format!("--dep={package}={}", path.display());
+        assert!(invocations.contains(&expected), "{invocations}");
+    }
+    assert!(invocations.contains("src/main.wave"), "{invocations}");
+}
+
 fn compile_fake_wavec(root: &Path) -> PathBuf {
     let source = root.join("fake_wavec.rs");
     fs::write(
