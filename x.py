@@ -34,7 +34,14 @@ ROOT = Path(__file__).resolve().parent
 TARGET_DIR = ROOT / "target"
 DIST_DIR = ROOT / "dist"
 BINARY_NAME = "vex"
-PACKAGE_DOCUMENTS = ("README.md", "LICENSE", "NOTICE", "COPYRIGHT")
+PACKAGE_DOCUMENTS = (
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "COPYRIGHT",
+    "THIRD_PARTY_LICENSES.md",
+)
 CHECKSUM_FILE = "SHA256SUMS"
 MINIMUM_ZIP_EPOCH = 315532800  # 1980-01-01T00:00:00Z
 MAXIMUM_ZIP_EPOCH = 4354819198  # 2107-12-31T23:59:58Z
@@ -514,12 +521,46 @@ def verify_release_source(version: str) -> None:
     require_release_tag(version)
 
 
+def validate_third_party_licenses(
+    notice_path: Path = ROOT / "THIRD_PARTY_LICENSES.md",
+    lockfile_path: Path = ROOT / "Cargo.lock",
+) -> None:
+    if tomllib is None:
+        raise ReleaseError("Python 3.11 or newer is required to read Cargo.lock")
+    try:
+        with lockfile_path.open("rb") as lockfile:
+            metadata = tomllib.load(lockfile)
+        notice = notice_path.read_text(encoding="utf-8")
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ReleaseError(f"could not validate third-party license inventory: {error}") from error
+
+    packages = sorted(
+        (package["name"], package["version"])
+        for package in metadata.get("package", [])
+        if str(package.get("source", "")).startswith("registry+")
+    )
+    missing_notices = [
+        f"{name} {version}"
+        for name, version in packages
+        if f"https://crates.io/crates/{name}/{version}" not in notice
+    ]
+    if missing_notices:
+        raise ReleaseError(
+            "third-party license inventory is incomplete (missing from "
+            "THIRD_PARTY_LICENSES.md: "
+            + ", ".join(missing_notices)
+            + ")"
+        )
+    status("Audited", f"third-party licenses for {len(packages)} locked packages")
+
+
 def run_check_suite() -> None:
     run_command(["cargo", "fmt", "--check"])
     run_python_tests()
     run_command(["cargo", "test", "--locked"])
     run_command(["cargo", "clippy", "--locked", "--all-targets", "--", "-D", "warnings"])
     run_command(["cargo", "build", "--locked"])
+    validate_third_party_licenses()
 
 
 def command_check(_: argparse.Namespace) -> None:

@@ -22,17 +22,33 @@ GitHub Release. It never publishes a release automatically.
 Start from the current `wavefnd/Vex:master`. Complete the release-candidate
 checklist before tagging:
 
-1. Update `CHANGELOG.md` and user-facing release notes.
+1. Update `CHANGELOG.md` and the reviewed `RELEASE_NOTES.md` used by the release
+   workflow.
 2. Confirm the supported platform table and compatible `wavec` contract.
 3. Confirm that `Cargo.toml` contains the intended version and that
    `Cargo.lock` is committed.
-4. Run the complete local validation suite:
+4. Audit the locked Rust dependency graph for known vulnerabilities and review
+   every dependency license. Record the scanner, advisory database date, and
+   result in the pull request. For example, OSV-Scanner v2 can inspect the
+   committed lockfile with:
+
+   ```sh
+   osv-scanner scan source --lockfile Cargo.lock
+   cargo metadata --locked --format-version 1
+   ```
+
+5. Run the complete local validation suite:
 
    ```sh
    python3 x.py check
    ```
 
-5. Merge the release-candidate pull request and wait for every required CI
+6. Run a real product smoke with a compatible `wavec`: initialize a temporary
+   project, run Hello World through `PATH`, repeat a locked/offline build, and
+   confirm a raw compiler option such as `vex build --emit=obj` is rejected.
+   The integration suite must also cover path-lock relocation, Git lock
+   reproducibility, full and targeted updates, and compiler schema rejection.
+7. Merge the release-candidate pull request and wait for every required CI
    check on `master` to pass.
 
 Do not create a release tag from a feature branch, a dirty checkout, or a
@@ -95,7 +111,9 @@ gh attestation verify vex-v0.0.1-x86_64-unknown-linux-gnu.tar.gz \
 Repeat attestation verification for every archive and `SHA256SUMS`. Extract at
 least one native archive in a clean environment and run `vex --version` and
 `vex --help`. Complete the documented Wave project smoke test with a compatible
-`wavec` before publication.
+`wavec` before publication. Confirm that each archive also contains
+`README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, `COPYRIGHT`, and
+`THIRD_PARTY_LICENSES.md`.
 
 ## 4. Publish deliberately
 

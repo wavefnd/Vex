@@ -13,7 +13,8 @@ copyright information.
 Vex invokes the separately distributed `wavec` compiler. The Vex source and
 release archives do not grant additional rights to `wavec`, Wave packages, or
 third-party dependencies; those works remain subject to their respective
-licenses.
+licenses. The locked dependency inventory, copyright attributions, and
+applicable license notices are provided in THIRD_PARTY_LICENSES.md.
 
 Source code for this release is available from:
 https://github.com/wavefnd/Vex

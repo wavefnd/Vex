@@ -2,6 +2,13 @@
 name = "vex"
 version = "0.0.1"
 edition = "2021"
+description = "Package manager and build tool for the Wave programming language"
+license = "MPL-2.0"
+repository = "https://github.com/wavefnd/Vex"
+readme = "README.md"
+keywords = ["wave", "package-manager", "build-tool"]
+categories = ["command-line-utilities", "development-tools::build-utils"]
+publish = false
 
 [dependencies]
 wson_rs = "0.2.5"
