@@ -2,14 +2,16 @@
 
 ## Supported versions
 
-Vex has not published a stable release yet. Until v0.0.1 is released, security
-fixes are made on the latest `master` branch. This table will be updated when a
-public release is available.
+Vex `v0.0.1` is the current public release (published 2026-08-23). Security
+fixes for that release are made on the latest `master` branch and ship in the
+next published release when needed. Pre-`v0.0.1` snapshots and older commits
+are not supported.
 
 | Version | Supported |
 |---|---|
-| `master` | Best effort |
-| Unreleased snapshots and older commits | No |
+| `v0.0.1` | Yes |
+| `master` | Best effort (development tip) |
+| Pre-`v0.0.1` snapshots and older commits | No |
 
 ## Reporting a vulnerability
 
