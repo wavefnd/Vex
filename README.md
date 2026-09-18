@@ -180,15 +180,31 @@ vex update alpha shared_core
 Commit `vex.lock` so the same manifest and lockfile select the same dependency graph. A dry run never fetches or rewrites dependencies; use `vex fetch` first when the locked checkout is not available locally.
 
 Inspect the resolved graph, including path sources, Git selectors, and short
-locked commit IDs:
+locked commit IDs. `vex tree` is read-only: it does not fetch or rewrite the
+lockfile beyond normal resolution, and it honors `--locked` and `--offline`
+the same way as build commands.
 
 ```sh
 vex tree
 vex tree --locked --offline
 ```
 
-Shared transitive dependencies are expanded once and marked with `(*)` when
-they appear again.
+Example output with a Git dependency, a path dependency, and a shared
+transitive package:
+
+```text
+app v0.1.0
+├── alpha v1.0.0 (git https://example.com/alpha.git branch main @ 0123456)
+│   └── shared v0.2.0 (path ../shared)
+│       └── leaf v0.1.0 (path ../leaf)
+└── beta v2.0.0 (path ../beta)
+    └── shared v0.2.0 (path ../shared) (*)
+
+(*) package dependencies already shown
+```
+
+The `(*)` marker means that package was already expanded earlier in the tree;
+its dependencies are not printed again.
 
 ### Reproducible and Offline Modes
 
