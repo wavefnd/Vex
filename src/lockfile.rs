@@ -148,7 +148,7 @@ fn parse_package(value: &WsonValue) -> Result<LockedPackage, String> {
                 branch: optional_string(object, "branch")?,
                 tag: optional_string(object, "tag")?,
                 rev: optional_string(object, "rev")?,
-                commit,
+                commit: commit.to_ascii_lowercase(),
                 resolved: PathBuf::from(required_string(object, "resolved")?),
             }
         }
@@ -337,5 +337,101 @@ mod tests {
         )
         .expect_err("Git commits must be full object IDs");
         assert!(err.contains("invalid Git commit"), "{err}");
+    }
+
+    #[test]
+    fn normalizes_sha1_and_sha256_git_commits_to_lowercase() {
+        // SHA-1: 40 chars
+        for spelling in [
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            "0123456789AbCdEf0123456789aBcDeF01234567",
+        ] {
+            let manifest = format!(
+                r#"{{
+                    version = 2,
+                    package = [{{
+                        name = "dep",
+                        version = "1.0.0",
+                        source = "git",
+                        git = "https://example.com/dep.git",
+                        commit = "{spelling}",
+                        resolved = ".vex/deps/dep",
+                        dependencies = []
+                    }}]
+                }}"#
+            );
+            let parsed = parse_lockfile(&manifest).expect("SHA-1 commit must parse");
+            match &parsed.packages[0].source {
+                LockedSource::Git { commit, .. } => {
+                    assert_eq!(commit, "0123456789abcdef0123456789abcdef01234567");
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // SHA-256: 64 chars
+        for spelling in [
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+            "0123456789AbCdEf0123456789aBcDeF0123456789AbCdEf0123456789aBcDeF",
+        ] {
+            let manifest = format!(
+                r#"{{
+                    version = 2,
+                    package = [{{
+                        name = "dep",
+                        version = "1.0.0",
+                        source = "git",
+                        git = "https://example.com/dep.git",
+                        commit = "{spelling}",
+                        resolved = ".vex/deps/dep",
+                        dependencies = []
+                    }}]
+                }}"#
+            );
+            let parsed = parse_lockfile(&manifest).expect("SHA-256 commit must parse");
+            match &parsed.packages[0].source {
+                LockedSource::Git { commit, .. } => {
+                    assert_eq!(
+                        commit,
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_abbreviated_invalid_and_unsupported_length_commits() {
+        for invalid in [
+            "0123456789abcdef",                          // abbreviated 16 chars
+            "0123456789abcdef0123456789abcdef0123456",   // 39 chars
+            "0123456789abcdef0123456789abcdef012345678", // 41 chars
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde", // 63 chars
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0", // 65 chars
+            "0123456789abcdef0123456789abcdef0123456g",  // invalid hex char 'g'
+            "0123456789ABCDEF0123456789ABCDEF0123456G",  // invalid hex char 'G'
+            "0123456789abcdef0123456789abcdef012345 7",  // space
+        ] {
+            let manifest = format!(
+                r#"{{
+                    version = 2,
+                    package = [{{
+                        name = "dep",
+                        version = "1.0.0",
+                        source = "git",
+                        git = "https://example.com/dep.git",
+                        commit = "{invalid}",
+                        resolved = ".vex/deps/dep",
+                        dependencies = []
+                    }}]
+                }}"#
+            );
+            let err = parse_lockfile(&manifest)
+                .expect_err(&format!("commit `{invalid}` must be rejected"));
+            assert!(err.contains("invalid Git commit"), "{err}");
+        }
     }
 }

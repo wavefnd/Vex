@@ -130,6 +130,86 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
     assert_eq!(read_lock(&app), updated_lock);
 }
 
+#[test]
+fn git_lock_accepts_uppercase_and_mixed_case_commit_ids_without_recheckout() {
+    let fixture = TestDir::new();
+    let leaf = fixture.path().join("leaf");
+    let app = fixture.path().join("app");
+
+    create_package(&leaf, "leaf", &[]);
+    init_git(&leaf);
+    let leaf_commit = commit_all(&leaf, "initial leaf");
+
+    create_package(&app, "app", &[("leaf", git_url(&leaf), Some("master"))]);
+
+    let first_fetch = vex(&app, &["fetch"]);
+    assert_success(&first_fetch, "initial vex fetch");
+
+    let initial_lock = read_lock(&app);
+    assert!(initial_lock.contains(&format!("commit = \"{leaf_commit}\"")));
+
+    // Uppercase commit ID in vex.lock
+    let uppercase_commit = leaf_commit.to_ascii_uppercase();
+    assert_ne!(leaf_commit, uppercase_commit);
+    let uppercase_lock = initial_lock.replace(&leaf_commit, &uppercase_commit);
+    fs::write(app.join("vex.lock"), &uppercase_lock).expect("uppercase lock must be written");
+
+    // Locked offline fetch must succeed without re-fetching or rewriting the lockfile
+    let locked_fetch = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_success(
+        &locked_fetch,
+        "locked offline fetch with uppercase commit ID",
+    );
+    let locked_stderr = String::from_utf8_lossy(&locked_fetch.stderr);
+    assert!(
+        !locked_stderr.contains("Fetching"),
+        "locked fetch unexpectedly contacted Git: {locked_stderr}"
+    );
+    assert_eq!(read_lock(&app), uppercase_lock);
+    assert_eq!(
+        git_stdout(&app.join(".vex/deps/leaf"), &["rev-parse", "HEAD"]),
+        leaf_commit
+    );
+
+    // Locked offline tree command must also succeed without modifying the lockfile
+    let tree_output = vex(&app, &["tree", "--locked", "--offline"]);
+    assert_success(&tree_output, "locked offline tree with uppercase commit ID");
+    assert_eq!(read_lock(&app), uppercase_lock);
+
+    // Mixed-case commit ID in vex.lock
+    let mixed_case_commit: String = leaf_commit
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i % 2 == 0 {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    let mixed_lock = initial_lock.replace(&leaf_commit, &mixed_case_commit);
+    fs::write(app.join("vex.lock"), &mixed_lock).expect("mixed-case lock must be written");
+
+    let mixed_locked_fetch = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_success(
+        &mixed_locked_fetch,
+        "locked offline fetch with mixed-case commit ID",
+    );
+    assert_eq!(read_lock(&app), mixed_lock);
+    assert_eq!(
+        git_stdout(&app.join(".vex/deps/leaf"), &["rev-parse", "HEAD"]),
+        leaf_commit
+    );
+
+    // Genuinely invalid commit ID fails
+    let invalid_lock =
+        initial_lock.replace(&leaf_commit, "0123456789invalidcommithexbad012345678901");
+    fs::write(app.join("vex.lock"), &invalid_lock).expect("invalid lock must be written");
+    let invalid_fetch = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_failure(&invalid_fetch, "locked fetch with invalid commit hash");
+}
+
 fn create_package(path: &Path, name: &str, dependencies: &[(&str, String, Option<&str>)]) {
     fs::create_dir_all(path.join("src")).expect("package source directory must be created");
     fs::write(path.join("src/lib.wave"), "pub fun package_marker() {}\n")
