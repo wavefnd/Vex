@@ -15,4 +15,4 @@ manifest.workspace = true
 lockfile.workspace = true
 state.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
