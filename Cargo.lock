@@ -911,9 +911,9 @@ dependencies = [
 
 [[package]]
 name = "wson_rs"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b77edecc86939151dca08b2688c02126a37796350708dbf71c82f636dd2a1732"
+checksum = "d7a084dc6cbf726a05e330298709c736721955f89ec98704634908d26bf7b2a1"
 dependencies = [
  "chrono",
  "once_cell",
