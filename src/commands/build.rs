@@ -1,13 +1,12 @@
 use crate::{messages::Messages, outcome::Outcome};
 use diagnostic::Error;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::ui;
 use compiler::{run_build_with_dry_run, Compiler};
 use manifest::Manifest;
-use resolver::{resolve, ResolveOptions, UpdatePolicy};
+use resolver::{resolve_validated, ResolveOptions, UpdatePolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildMode {
@@ -62,6 +61,7 @@ fn run_build(
     if let Some(target) = &options.target {
         compiler.validate_target(target)?;
     }
+    compiler.validate_version(manifest.compiler.as_deref())?;
     let default_input = resolve_default_input(manifest, mode)?;
 
     let mut global_args = Vec::new();
@@ -83,7 +83,7 @@ fn run_build(
         build_args.push("--dry-run".to_string());
     }
 
-    let resolution = resolve(
+    let resolution = resolve_validated(
         manifest,
         ResolveOptions {
             dry_run: options.dry_run,
@@ -92,6 +92,7 @@ fn run_build(
             offline: options.offline,
         },
         ui::status,
+        |candidate| compiler.validate_version(candidate.compiler.as_deref()),
     )?;
 
     let generation = if mode == BuildMode::Run {
@@ -125,12 +126,15 @@ fn run_build(
     }
 
     messages.status("compiler")?;
+    let reporting = messages.enabled();
+    let mut report = |event| messages.emit(event);
     let execution = run_build_with_dry_run(
         compiler,
         &wavec_args,
         runtime,
         options.dry_run,
         generation.as_deref(),
+        if reporting { Some(&mut report) } else { None },
     )?;
     drop(resolution);
     let mut outcome = Outcome::success();
@@ -141,7 +145,7 @@ fn run_build(
         outcome = Outcome::program(status);
     }
 
-    if !options.dry_run {
+    if !options.dry_run && outcome.code == 0 {
         ui::status(
             "Finished",
             format!(
@@ -245,29 +249,18 @@ fn build_usage(mode: BuildMode) -> &'static str {
 fn resolve_default_input(manifest: &Manifest, mode: BuildMode) -> Result<String, Error> {
     if mode == BuildMode::Run && manifest.lib {
         return Err(Error::resolution(
-            "library manifest cannot be `vex run` default target. Add a binary target to vex.ws."
-                .to_string(),
+            "library packages cannot be run; use a binary package with src/main.wave.".to_string(),
         ));
     }
 
     let preferred = manifest.default_entry_path();
-    if preferred.exists() {
+    if preferred.is_file() {
         return input_string(&preferred);
     }
 
-    if mode == BuildMode::Run {
-        if let Some(path) = find_wave_file_with_main(Path::new("src"))? {
-            return input_string(&path);
-        }
-    }
-
-    if let Some(path) = find_first_wave_file(Path::new("src"))? {
-        return input_string(&path);
-    }
-
     Err(Error::resolution(format!(
-        "no default Wave input found. Expected `{}` or any `.wave` file in `src/`.",
-        preferred.to_string_lossy()
+        "missing canonical package entry `{}`\nhelp: create this file; Vex does not select arbitrary .wave files",
+        preferred.display()
     )))
 }
 
@@ -275,58 +268,6 @@ fn input_string(path: &Path) -> Result<String, Error> {
     path.to_str().map(str::to_owned).ok_or_else(|| {
         Error::resolution("wavec JSON protocol cannot represent a non-UTF-8 input path")
     })
-}
-
-fn find_first_wave_file(src_dir: &Path) -> Result<Option<PathBuf>, Error> {
-    if !src_dir.exists() {
-        return Ok(None);
-    }
-
-    let mut files = Vec::new();
-    for entry in fs::read_dir(src_dir)
-        .map_err(|e| Error::environment(format!("failed to read src/: {e}")))?
-    {
-        let entry =
-            entry.map_err(|e| Error::environment(format!("failed to read src entry: {e}")))?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("wave") {
-            files.push(path);
-        }
-    }
-
-    files.sort();
-    Ok(files.into_iter().next())
-}
-
-fn find_wave_file_with_main(src_dir: &Path) -> Result<Option<PathBuf>, Error> {
-    if !src_dir.exists() {
-        return Ok(None);
-    }
-
-    let mut candidates = Vec::new();
-
-    for entry in fs::read_dir(src_dir)
-        .map_err(|e| Error::environment(format!("failed to read src/: {e}")))?
-    {
-        let entry =
-            entry.map_err(|e| Error::environment(format!("failed to read src entry: {e}")))?;
-        let path = entry.path();
-
-        if path.extension().and_then(|s| s.to_str()) != Some("wave") {
-            continue;
-        }
-
-        let content = fs::read_to_string(&path).map_err(|e| {
-            Error::environment(format!("failed to read `{}`: {e}", path.to_string_lossy()))
-        })?;
-
-        if content.contains("fun main()") {
-            candidates.push(path);
-        }
-    }
-
-    candidates.sort();
-    Ok(candidates.into_iter().next())
 }
 
 #[cfg(test)]

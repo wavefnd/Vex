@@ -90,7 +90,7 @@ checksum = "9cbe37c69085a508a1bbaa07ad57ec34a2d9d277da94a830b031fb08cac16ba1"
 
 [[package]]
 name = "compiler"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
  "process",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "diagnostic"
-version = "0.0.1"
+version = "0.0.2-beta"
 
 [[package]]
 name = "digest"
@@ -399,7 +399,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lockfile"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
  "source",
@@ -414,9 +414,10 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "manifest"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
+ "semver",
  "source",
  "wson",
 ]
@@ -478,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "process"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "libc",
  "windows-sys",
@@ -524,7 +525,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "resolver"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
  "lockfile",
@@ -634,7 +635,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
 name = "source"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "percent-encoding",
  "url",
@@ -648,7 +649,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "state"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "libc",
  "process",
@@ -711,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "toolchain"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "flate2",
  "process",
@@ -767,7 +768,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vex"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "colorex",
  "compiler",
@@ -903,7 +904,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wson"
-version = "0.0.1"
+version = "0.0.2-beta"
 dependencies = [
  "serde_json",
  "wson_rs",

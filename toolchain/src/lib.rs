@@ -81,6 +81,28 @@ fn remove_installer(path: &PathBuf) -> Result<(), String> {
     })
 }
 
+fn finish_installer(
+    result: Result<(bool, String), String>,
+    cleanup: Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok((true, _)) => {
+            if let Err(error) = cleanup {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr().lock(), "warning: {error}");
+            }
+            Ok(())
+        }
+        Ok((false, status)) | Err(status) => {
+            let suffix = cleanup
+                .err()
+                .map(|e| format!("; cleanup: {e}"))
+                .unwrap_or_default();
+            Err(format!("wavec installer failed: {status}{suffix}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +127,20 @@ mod tests {
         drop(second_file);
         fs::remove_file(first_path).expect("first temporary installer must be removed");
         fs::remove_file(second_path).expect("second temporary installer must be removed");
+    }
+}
+
+#[cfg(test)]
+mod result_tests {
+    #[test]
+    fn cleanup_cannot_reverse_install_result() {
+        assert!(
+            super::finish_installer(Ok((true, "exit 0".into())), Err("cleanup denied".into()))
+                .is_ok()
+        );
+        for result in [Ok((false, "exit 42".into())), Err("spawn denied".into())] {
+            let error = super::finish_installer(result, Err("cleanup denied".into())).unwrap_err();
+            assert!(error.contains("installer failed") && error.contains("cleanup denied"));
+        }
     }
 }

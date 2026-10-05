@@ -158,6 +158,7 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
 #[test]
 fn dirty_managed_checkouts_are_rejected_without_discarding_changes() {
     let fixture = TestDir::new();
+    let compiler = fixture_compiler(fixture.path());
     let dependency = fixture.path().join("dep");
     let app = fixture.path().join("app");
     create_package(&dependency, "dep", &[]);
@@ -191,14 +192,11 @@ fn dirty_managed_checkouts_are_rejected_without_discarding_changes() {
         ] {
             // Select a deterministic compiler path without relying on PATH or
             // a managed install. Dirty-source preflight must reject the graph
-            // before this deliberately missing compiler can be invoked.
+            // before compiler planning or compilation.
             let output = Command::new(env!("CARGO_BIN_EXE_vex"))
                 .args(args)
                 .current_dir(&app)
-                .env(
-                    "VEX_WAVEC",
-                    fixture.path().join("deliberately-missing-wavec"),
-                )
+                .env("VEX_WAVEC", &compiler)
                 .output()
                 .expect("Vex dirty-checkout preflight must start");
             assert_failure(&output, &format!("reject dirty checkout for {args:?}"));
@@ -502,6 +500,7 @@ fn tag_and_exact_revision_selectors_remain_pinned_on_update() {
 #[test]
 fn dependency_git_ignores_inherited_repository_context() {
     let fixture = TestDir::new();
+    let compiler = fixture_compiler(fixture.path());
     let dep = fixture.path().join("dep");
     let other = fixture.path().join("unrelated");
     create_package(&dep, "dep", &[]);
@@ -536,29 +535,17 @@ fn dependency_git_ignores_inherited_repository_context() {
             &["check", "--dry-run", "--locked", "--offline"],
         ] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_vex"));
-            command.args(args).current_dir(&app).env(
-                "VEX_WAVEC",
-                fixture.path().join("deliberately-missing-wavec"),
-            );
+            command
+                .args(args)
+                .current_dir(&app)
+                .env("VEX_WAVEC", &compiler);
             for (i, (name, value)) in overrides.iter().enumerate() {
                 if case == i || case == overrides.len() {
                     command.env(name, value);
                 }
             }
             let output = command.output().unwrap();
-            if args[0] == "check" {
-                // Reaching the compiler proves read-only checkout verification
-                // passed; this fixture does not depend on an installed wavec.
-                assert_failure(&output, "missing fixture compiler");
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                assert!(
-                    stderr.contains("failed to execute")
-                        && stderr.contains("deliberately-missing-wavec"),
-                    "{stderr}"
-                );
-            } else {
-                assert_success(&output, &format!("environment case {case}: {args:?}"));
-            }
+            assert_success(&output, &format!("environment case {case}: {args:?}"));
             assert_eq!(
                 git_stdout(&app.join(".vex/deps/pkg_8ce3e71ef8635d2bf27913bb680d7f88ad0238ea42c779c4b30f4e587d07da8e"), &["rev-parse", "HEAD"]),
                 dep_commit
@@ -576,6 +563,7 @@ fn dependency_git_ignores_inherited_repository_context() {
 #[test]
 fn url_rewrites_preserve_declared_identity_and_reject_invalid_origins() {
     let fixture = TestDir::new();
+    let compiler = fixture_compiler(fixture.path());
     let dep = fixture.path().join("dep");
     let app = fixture.path().join("app");
     let home = fixture.path().join("isolated-home");
@@ -604,10 +592,7 @@ fn url_rewrites_preserve_declared_identity_and_reject_invalid_origins() {
             .env("XDG_CONFIG_HOME", &home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", &config)
-            .env(
-                "VEX_WAVEC",
-                fixture.path().join("deliberately-missing-wavec"),
-            )
+            .env("VEX_WAVEC", &compiler)
             .output()
             .unwrap()
     };
@@ -620,7 +605,7 @@ fn url_rewrites_preserve_declared_identity_and_reject_invalid_origins() {
         assert_success(&run(args), "URL-rewritten dependency");
     }
     let output = run(&["check", "--dry-run", "--locked", "--offline"]);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to execute"));
+    assert_success(&output, "compiler planning with rewritten origin");
     let locked = read_lock(&app);
     assert!(locked.contains(declared));
     assert!(!locked.contains(&git_url(&dep)));
@@ -1190,4 +1175,235 @@ fn unsupported_windows_checkout_directory_preserves_existing_state() {
         fs::read(deep.join(resolved).join("src/lib.wave")).unwrap(),
         source
     );
+}
+
+#[test]
+fn submodule_dependency_is_rejected_before_publication() {
+    let fixture = TestDir::new();
+    let dep = fixture.path().join("dep");
+    let app = fixture.path().join("app");
+    create_package(&dep, "dep", &[]);
+    init_git(&dep);
+    let oid = commit_all(&dep, "initial");
+    let status = Command::new("git")
+        .current_dir(&dep)
+        .args([
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{oid},nested"),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = Command::new("git")
+        .current_dir(&dep)
+        .args([
+            "-c",
+            "user.name=Vex Test",
+            "-c",
+            "user.email=vex@example.invalid",
+            "commit",
+            "-qm",
+            "gitlink",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    create_package(&app, "app", &[("dep", git_url(&dep), Some("master"))]);
+    let output = vex(&app, &["fetch"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("submodules"));
+    assert!(!app.join("vex.lock").exists());
+}
+
+#[test]
+fn failed_git_operations_keep_previous_graph_usable_offline() {
+    for operation in [
+        "fetch Git dependency",
+        "checkout locked Git dependency commit",
+    ] {
+        let fixture = TestDir::new();
+        let dep = fixture.path().join("dep");
+        let app = fixture.path().join("app");
+        create_package(&dep, "dep", &[]);
+        init_git(&dep);
+        commit_all(&dep, "initial");
+        create_package(&app, "app", &[("dep", git_url(&dep), Some("master"))]);
+        assert_success(&vex(&app, &["fetch"]), "initial");
+        let old = fs::read(app.join("vex.lock")).unwrap();
+        fs::write(dep.join("new.txt"), "new").unwrap();
+        commit_all(&dep, "next");
+        let output = Command::new(env!("CARGO_BIN_EXE_vex"))
+            .current_dir(&app)
+            .env("VEX_TEST_GIT_FAIL_ACTION", operation)
+            .arg("update")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(operation));
+        assert_eq!(fs::read(app.join("vex.lock")).unwrap(), old);
+        assert_success(
+            &vex(&app, &["fetch", "--locked", "--offline"]),
+            "old graph after failure",
+        );
+        assert_eq!(fs::read(app.join("vex.lock")).unwrap(), old);
+    }
+}
+
+#[test]
+fn unadvertised_locked_object_is_fetched_exactly_and_pruned_object_never_substituted() {
+    let fixture = TestDir::new();
+    let dep = fixture.path().join("dep");
+    let app = fixture.path().join("app");
+    create_package(&dep, "dep", &[]);
+    init_git(&dep);
+    let old = commit_all(&dep, "old root");
+    create_package(&app, "app", &[("dep", git_url(&dep), Some("master"))]);
+    assert_success(&vex(&app, &["fetch"]), "initial fetch");
+    let lock = fs::read(app.join("vex.lock")).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&dep)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["checkout", "--orphan", "replacement"]);
+    commit_all(&dep, "new root");
+    git(&["branch", "-D", "master"]);
+    git(&["branch", "-m", "master"]);
+    git(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    fs::remove_dir_all(app.join(".vex/deps")).unwrap();
+    assert_success(
+        &vex(&app, &["fetch", "--locked"]),
+        "fetch exact unadvertised commit",
+    );
+    assert_eq!(fs::read(app.join("vex.lock")).unwrap(), lock);
+    fs::remove_dir_all(app.join(".vex/deps")).unwrap();
+    git(&["reflog", "expire", "--expire=now", "--all"]);
+    git(&["gc", "--prune=now"]);
+    let output = vex(&app, &["fetch", "--locked"]);
+    assert_eq!(output.status.code(), Some(3));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains(&old) && error.contains("never substitute"),
+        "{error}"
+    );
+    assert_eq!(fs::read(app.join("vex.lock")).unwrap(), lock);
+}
+
+#[test]
+fn late_invalid_manifest_or_cycle_cannot_publish_earlier_updates() {
+    for cycle in [false, true] {
+        let fixture = TestDir::new();
+        let first = fixture.path().join("first");
+        let last = fixture.path().join("last");
+        let app = fixture.path().join("app");
+        for (path, name) in [(&first, "first"), (&last, "last")] {
+            create_package(path, name, &[]);
+            init_git(path);
+            commit_all(path, "initial");
+        }
+        create_package(
+            &app,
+            "app",
+            &[
+                ("first", git_url(&first), Some("master")),
+                ("last", git_url(&last), Some("master")),
+            ],
+        );
+        assert_success(&vex(&app, &["fetch"]), "initial graph");
+        let locked = fs::read(app.join("vex.lock")).unwrap();
+        fs::write(first.join("new.txt"), "staged but never published").unwrap();
+        commit_all(&first, "first update");
+        if cycle {
+            create_package(&last, "last", &[("first", git_url(&first), Some("master"))]);
+            create_package(&first, "first", &[("last", git_url(&last), Some("master"))]);
+            commit_all(&first, "first cycle edge");
+        } else {
+            fs::write(last.join("vex.ws"), "{ broken manifest").unwrap();
+        }
+        commit_all(&last, "invalid later package");
+        assert_failure(&vex(&app, &["update"]), "reject invalid candidate graph");
+        assert_eq!(fs::read(app.join("vex.lock")).unwrap(), locked);
+        assert_success(
+            &vex(&app, &["fetch", "--locked", "--offline"]),
+            "reuse complete previous graph",
+        );
+        assert_eq!(fs::read(app.join("vex.lock")).unwrap(), locked);
+    }
+}
+
+fn fixture_compiler(root: &Path) -> PathBuf {
+    let source = root.join("fake.rs");
+    let binary = root.join(if cfg!(windows) { "wavec.exe" } else { "wavec" });
+    fs::write(&source, include_str!("fixtures/fake_wavec.rs")).unwrap();
+    assert_success(
+        &Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap(),
+        "compile fixture",
+    );
+    binary
+}
+
+#[test]
+fn failed_clone_keeps_old_graph_and_never_publishes_partial_checkout() {
+    for long_path in [false, true] {
+        let fixture = TestDir::new();
+        let dep = fixture.path().join("dep");
+        let next = fixture.path().join("next");
+        let app = if long_path {
+            // Exercise the >200 init/fetch route without exceeding Windows'
+            // deliberate 240 UTF-16-unit checkout directory limit.
+            let padding = 100usize
+                .saturating_sub(fixture.path().as_os_str().len() + 5)
+                .max(1);
+            fixture.path().join("n".repeat(padding)).join("app")
+        } else {
+            fixture.path().join("app")
+        };
+        for (path, name) in [(&dep, "dep"), (&next, "next")] {
+            create_package(path, name, &[]);
+            init_git(path);
+            commit_all(path, "initial");
+        }
+        create_package(&app, "app", &[("dep", git_url(&dep), None)]);
+        assert_success(&vex(&app, &["fetch"]), "initial");
+        let original_manifest = fs::read(app.join("vex.ws")).unwrap();
+        let original_lock = fs::read(app.join("vex.lock")).unwrap();
+        let old_checkouts = fs::read_dir(app.join(".vex/deps")).unwrap().count();
+        create_package(
+            &app,
+            "app",
+            &[("dep", git_url(&dep), None), ("next", git_url(&next), None)],
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_vex"))
+            .current_dir(&app)
+            .env("VEX_TEST_GIT_FAIL_ACTION", "clone Git dependency")
+            .arg("fetch")
+            .output()
+            .unwrap();
+        assert_failure(&output, "injected clone failure");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("clone Git dependency"));
+        assert_eq!(fs::read(app.join("vex.lock")).unwrap(), original_lock);
+        assert_eq!(
+            fs::read_dir(app.join(".vex/deps")).unwrap().count(),
+            old_checkouts
+        );
+        fs::write(app.join("vex.ws"), original_manifest).unwrap();
+        assert_success(
+            &vex(&app, &["fetch", "--locked", "--offline"]),
+            "preserved old graph",
+        );
+    }
 }

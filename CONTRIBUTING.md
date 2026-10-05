@@ -100,8 +100,8 @@ The script removes `VEX_WAVEC` from its child environment and uses that director
 through `PATH`. It exercises initialization, Hello World, local path/transitive
 Git imports, public re-exports, private-symbol rejection, locked/offline reuse,
 and raw-flag rejection. Git sources are local fixtures, not network dependencies.
-Use `target/debug/vex.exe` on Windows. This smoke is not yet a required CI gate:
-the next Wave release must first be validated and pinned with its checksums.
+Use `target/debug/vex.exe` on Windows. This smoke is required on all nine platforms using the public Wave 0.2.1
+release and the archive digests in tools/wave-release.json. Drafts block the gate.
 The official Wave v0.2.0-pre-beta archive lacks the canonical package import
 contract used by current Vex; do not treat its Hello World success as full
 package compatibility.
@@ -176,10 +176,18 @@ Unless a file says otherwise, contributions are licensed under the
 
 ## Master merge rules
 
-Master requires a pull request, an up-to-date base, and all eight checks:
-Quality / Linux amd64; Package / Linux amd64; Test / Linux amd64;
-Test / Linux arm64; Test / Windows x64; Test / macOS x64; Test / macOS arm64;
-Build / Linux riscv64. Force pushes and deletion are prohibited. The ruleset has
-no bypass actors; administrators must also satisfy the PR and check requirements.
-Release gating
-remains a separate check of the exact master SHA and latest CI attempt.
+Master requires a pull request and an up-to-date base. Required checks are
+`Quality / Linux amd64` and `Platform / <id>` for every one of the nine IDs in
+`platforms.json`. All must pass on the current merge candidate. No force-push,
+deletion, or bypass actor is permitted; emergency changes still use a PR.
+`tools/release_gate.py` independently requires the exact release SHA's latest
+master-push CI attempt, with all ten jobs successful.
+
+Action references must be full immutable commit SHAs. Update a pin in a reviewed
+PR after inspecting the upstream diff and release notes; rollback by restoring
+the previous reviewed SHA. `tools/repository_checks.py` rejects mutable action
+references and missing platform lanes. No dependency-update bot is enabled.
+
+CI uses PR runs for feature branches and push runs for master. Superseded runs
+with the same PR/branch identity are cancelled; release runs use their separate,
+non-cancelling concurrency group.

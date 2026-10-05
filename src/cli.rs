@@ -1,4 +1,5 @@
 use colorex::Colorize;
+use std::io::IsTerminal;
 
 use crate::commands::build::{build, BuildMode};
 use crate::commands::check::check;
@@ -125,6 +126,30 @@ fn dispatch(
         print_help()?;
         return Ok(Outcome::success());
     }
+    let help_args;
+    let args = if args
+        .iter()
+        .skip(1)
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+        && matches!(
+            args[0].as_str(),
+            "init"
+                | "build"
+                | "run"
+                | "check"
+                | "fetch"
+                | "update"
+                | "info"
+                | "tree"
+                | "metadata"
+                | "setup"
+        ) {
+        help_args = vec![args[0].clone(), "--help".into()];
+        help_args.as_slice()
+    } else {
+        args
+    };
     if selection.manifest_path.is_some()
         && !matches!(
             args[0].as_str(),
@@ -166,7 +191,11 @@ fn dispatch(
 }
 
 fn print_version() -> Result<(), diagnostic::Error> {
-    diagnostic::outln!("{} {}", "vex".color("2,161,47"), VERSION.color("2,161,47"));
+    if std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        diagnostic::outln!("{} {}", "vex".color("2,161,47"), VERSION.color("2,161,47"));
+    } else {
+        diagnostic::outln!("vex {VERSION}");
+    }
     Ok(())
 }
 

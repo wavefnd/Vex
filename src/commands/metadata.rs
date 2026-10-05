@@ -58,14 +58,14 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
         let package_manifest = Manifest::load_from(&package_manifest_path)?;
         let mut dependencies = package.dependencies.clone();
         dependencies.sort();
-        packages.push(json!({"name":package.name, "version":package.version,
+        packages.push(json!({"name":package.name, "version":package.version, "manifest_format":package_manifest.format, "compiler":package_manifest.compiler,
             "source":source, "root":json_path(&directory)?, "manifest_path":json_path(&package_manifest_path)?,
             "entry_path":json_path(&directory.join(package_manifest.default_entry_path()))?,
             "kind":if package_manifest.lib {"library"} else {"binary"}, "dependencies":dependencies}));
     }
     packages.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let value: Value = json!({"schema_version":1,
-        "root":{"name":manifest.name,"version":manifest.version,"kind":if manifest.lib {"library"} else {"binary"},
+        "root":{"name":manifest.name,"version":manifest.version,"manifest_format":manifest.format,"compiler":manifest.compiler,"kind":if manifest.lib {"library"} else {"binary"},
             "root":root_text,"manifest_path":json_path(&project.manifest_path)?,
             "entry_path":json_path(&root.join(manifest.default_entry_path()))?,"dependencies":root_dependencies},
         "target_directory":json_path(&root.join("target"))?, "packages":packages});

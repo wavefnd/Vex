@@ -36,6 +36,8 @@ pub(crate) fn ensure_repository(
         Error::environment(format!("failed to create `{}`: {error}", parent.display()))
     })?;
     status("Cloning", format!("{name} ({url})"));
+    // Cover both clone and the init/fetch path used for long destinations.
+    inject_failure("clone Git dependency")?;
     // clone exports an absolute GIT_DIR to index-pack, whose Windows setup has
     // a separate fixed-length guard even with core.longpaths. Initialize deep
     // candidates without transport, then let resolution fetch/checkout through
@@ -192,6 +194,53 @@ pub(crate) fn fetch(destination: &Path, url: &str) -> Result<(), Error> {
         ]),
         "fetch Git dependency",
     )
+}
+
+pub(crate) fn fetch_exact(
+    destination: &Path,
+    url: &str,
+    name: &str,
+    commit: &str,
+) -> Result<(), Error> {
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::resolution("locked Git object ID is invalid"));
+    }
+    let result = run(
+        command_in(destination).args(["fetch", "--no-tags", "--", url, commit]),
+        "fetch exact locked Git object",
+    );
+    if has_commit(destination, commit)? {
+        return Ok(());
+    }
+    if let Err(failure) = result {
+        if process::cancelled() || process::failure_code() == 124 {
+            return Err(failure);
+        }
+        // A failed exact fetch alone cannot prove pruning: servers may refuse
+        // unadvertised objects. Probe connectivity without guessing from stderr.
+        run(
+            command_in(destination).args(["ls-remote", "--", url]),
+            "access locked Git source",
+        )?;
+        return Err(Error::resolution(format!(
+            "dependency `{name}`: server cannot provide locked commit `{commit}` (missing or unadvertised-object access refused)\n{failure}\nhelp: restore the object on the source host or use an existing checkout containing it; Vex will never substitute a newer commit")));
+    }
+    Err(Error::resolution(format!("dependency `{name}`: fetched source does not contain locked commit `{commit}\nhelp: the source host must retain locked objects")))
+}
+
+pub(crate) fn reject_submodules(destination: &Path, name: &str, commit: &str) -> Result<(), Error> {
+    let listing = stdout(
+        command_in(destination).args(["ls-tree", "-r", "-z", commit]),
+        "inspect Git submodule entries",
+    )?;
+    if listing
+        .split('\0')
+        .any(|entry| entry.starts_with("160000 "))
+    {
+        return Err(Error::resolution(format!(
+            "Git dependency `{name}` contains submodules, which this Vex release does not support\nhelp: replace them with explicit Git/path dependencies or publish a source tree containing the required files")));
+    }
+    Ok(())
 }
 
 pub(crate) fn refresh_default_branch(destination: &Path, url: &str) -> Result<(), Error> {
@@ -401,7 +450,19 @@ fn command() -> Command {
     command
 }
 
+fn inject_failure(_action: &str) -> Result<(), Error> {
+    #[cfg(debug_assertions)]
+    if std::env::var("VEX_TEST_GIT_FAIL_ACTION").as_deref() == Ok(_action) {
+        return Err(
+            Error::environment(format!("injected Git operation failure: {_action}"))
+                .with_field("operation", _action),
+        );
+    }
+    Ok(())
+}
+
 fn run(command: &mut Command, action: &str) -> Result<(), Error> {
+    inject_failure(action)?;
     let output = command
         .supervised_output()
         .map_err(|error| Error::environment(format!("failed to start git to {action}: {error}")))?;

@@ -9,12 +9,13 @@ import argparse
 import json
 import re
 import subprocess
+from pathlib import Path
 
 REPOSITORY = "wavefnd/Vex"
-REQUIRED_JOBS = frozenset({
-    "Quality / Linux amd64", "Package / Linux amd64", "Test / Linux amd64",
-    "Test / Linux arm64", "Test / Windows x64", "Test / macOS x64",
-    "Test / macOS arm64", "Build / Linux riscv64",
+REQUIRED_JOBS = frozenset({"Quality / Linux amd64"} | {
+    "Platform / " + p["id"] for p in json.loads(
+        (Path(__file__).resolve().parents[1] / "platforms.json").read_text()
+    )["platforms"]
 })
 
 

@@ -100,8 +100,9 @@ jobs:
         run: python x.py check
 
   build:
-    name: Package / ${{ matrix.name }}
+    name: Package / ${{ matrix.id }}
     needs: validate
+    timeout-minutes: 180
     permissions:
       contents: read
       id-token: write
@@ -110,73 +111,113 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux amd64
+          - id: linux-amd64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            executor: native
             extension: tar.gz
-          - name: Linux arm64
+          - id: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            executor: native
             extension: tar.gz
-          - name: Windows x64
-            os: windows-2025
-            target: x86_64-pc-windows-msvc
-            extension: zip
-          - name: macOS Intel
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            extension: tar.gz
-          - name: macOS Apple Silicon
-            os: macos-15
-            target: aarch64-apple-darwin
-            extension: tar.gz
-          - name: Linux RISC-V
+          - id: linux-riscv64
             os: ubuntu-24.04
             target: riscv64gc-unknown-linux-gnu
+            executor: qemu
+            extension: tar.gz
+            image: debian@sha256:e3b4cb1b0056896c4b43e17472b906b10007ab94bc533d37a47e9a5795eebbc0
+            oci_platform: linux/riscv64
+          - id: linux-loongarch64
+            os: ubuntu-24.04
+            target: loongarch64-unknown-linux-gnu
+            executor: qemu
+            extension: tar.gz
+            image: ghcr.io/loong64/debian@sha256:f58d4dbdfc29497e5228fd5f418319d76842f257940c746d948dfe67b4e16ba9
+            oci_platform: linux/loong64
+          - id: macos-amd64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            executor: native
+            extension: tar.gz
+          - id: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            executor: native
+            extension: tar.gz
+          - id: windows-amd64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            executor: native
+            extension: zip
+          - id: windows-arm64
+            os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            executor: native
+            extension: zip
+          - id: freebsd-amd64
+            os: ubuntu-24.04
+            target: x86_64-unknown-freebsd
+            executor: vm
             extension: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
-
-      - name: Install RISC-V system tools
-        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes gcc-riscv64-linux-gnu qemu-user
-
       - name: Install Rust toolchain
+        if: matrix.executor == 'native'
         run: |
-          rustup toolchain install 1.96.0 --profile minimal --target ${{ matrix.target }}
+          rustup set default-host ${{ matrix.target }}
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
           rustup default 1.96.0
-
-      - name: Install Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        if: matrix.executor == 'native'
         with:
-          python-version: "3.11"
-
-      - name: Build release binary
+          python-version: '3.11'
+      - name: Complete native acceptance
+        if: matrix.executor == 'native'
         env:
-          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'riscv64gc-unknown-linux-gnu' && 'riscv64-linux-gnu-gcc' || '' }}
-        run: python x.py build ${{ matrix.target }}
-
-      - name: Package and smoke test release binary
-        run: python x.py package ${{ matrix.target }}
-
-      - name: Attest release archive
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/ci_platform.py ${{ matrix.id }}
+      - name: Register target execution
+        if: matrix.executor == 'qemu'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        with:
+          image: tonistiigi/binfmt@sha256:465d3fdd28d0f2b871ba4b4ec98bd183292e96167f00d9fd40bd249f8632d705
+          platforms: riscv64,loong64
+      - name: Complete emulated acceptance
+        if: matrix.executor == 'qemu'
+        shell: bash
+        run: |
+          docker run --rm --platform '${{ matrix.oci_platform }}' \
+            -v "$PWD:/work" -w /work '${{ matrix.image }}' \
+            sh tools/ci_guest.sh '${{ matrix.id }}'
+      - name: Complete FreeBSD acceptance
+        if: matrix.executor == 'vm'
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        with:
+          release: '14.4'
+          arch: x86_64
+          usesh: true
+          mem: 6144
+          copyback: true
+          run: sh tools/ci_guest.sh freebsd-amd64
+      - name: Attest release archive and acceptance evidence
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/vex-*-${{ matrix.target }}.${{ matrix.extension }}
+          subject-path: |
+            dist/vex-*-${{ matrix.target }}.${{ matrix.extension }}
+            dist/acceptance-${{ matrix.id }}.json
           create-storage-record: false
-
-      - name: Upload release archive
+      - name: Upload release archive and evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.target }}
-          path: dist/vex-*-${{ matrix.target }}.${{ matrix.extension }}
+          path: |
+            dist/vex-*-${{ matrix.target }}.${{ matrix.extension }}
+            dist/acceptance-${{ matrix.id }}.json
           if-no-files-found: error
           retention-days: 14
 
@@ -189,6 +230,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+      id-token: write
+      attestations: write
     steps:
       - name: Check out release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -216,12 +259,26 @@ jobs:
           python x.py checksum \
             x86_64-unknown-linux-gnu \
             aarch64-unknown-linux-gnu \
-            x86_64-pc-windows-msvc \
+            riscv64gc-unknown-linux-gnu \
+            loongarch64-unknown-linux-gnu \
             x86_64-apple-darwin \
             aarch64-apple-darwin \
-            riscv64gc-unknown-linux-gnu
+            x86_64-pc-windows-msvc \
+            aarch64-pc-windows-msvc \
+            x86_64-unknown-freebsd
           cd dist
           sha256sum --check SHA256SUMS
+
+      - name: Require all platform acceptance reports
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: python tools/repository_checks.py --acceptance dist --commit "$RELEASE_COMMIT"
+
+      - name: Attest release checksums
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+          create-storage-record: false
 
       - name: Verify archive provenance before publication
         env:
@@ -230,7 +287,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for archive in dist/vex-*.tar.gz dist/vex-*.zip; do
+          for archive in dist/vex-*.tar.gz dist/vex-*.zip dist/SHA256SUMS dist/acceptance-*.json; do
             gh attestation verify "$archive" --repo wavefnd/Vex \
               --signer-workflow wavefnd/Vex/.github/workflows/release.yml \
               --source-ref refs/heads/master --source-digest "$RELEASE_COMMIT" \
@@ -251,9 +308,10 @@ jobs:
             dist/vex-*.tar.gz
             dist/vex-*.zip
             dist/SHA256SUMS
+            dist/acceptance-*.json
             --repo "$GITHUB_REPOSITORY"
             --target "$RELEASE_COMMIT"
-            --title "Vex $RELEASE_TAG"
+            --title "$RELEASE_TAG"
             --generate-notes
           )
 

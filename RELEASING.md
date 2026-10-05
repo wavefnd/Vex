@@ -44,9 +44,8 @@ checklist before tagging:
 3. Confirm that `Cargo.toml` contains the intended version and that
    `Cargo.lock` is committed.
 4. Audit the locked Rust dependency graph for known vulnerabilities and review
-   every dependency license. Record the scanner, advisory database date, and
-   result in the pull request. For example, OSV-Scanner v2 can inspect the
-   committed lockfile with:
+   every dependency license. Record the scanner/API, UTC observation time, lock hash, and
+   result in the pull request. The committed OSV client inspects the locked graph with:
 
    ```sh
    python3 tools/dependency_audit.py
@@ -197,3 +196,23 @@ tests using assets downloaded from the public release.
   upstream workflow again.
 - Never publish a partial set of target archives or hand-edit generated
   archives and checksums.
+
+## Nine-platform release gate
+
+The release source version is `0.0.2-beta`; publish it as a prerelease. All nine
+platform acceptance reports must identify the exact release commit, a verified
+Wave 0.2.1 archive, and a successful real compiler/package execution. Draft Wave
+assets cannot satisfy acceptance. Review `tools/wave-release.json` against the
+final official assets before merging; changed digests require a reviewed update.
+
+Archives, acceptance reports, and SHA256SUMS are attested. Publication verifies
+repository, signer workflow, master ref, and exact source/signer commit. Missing or
+invalid attestations fail closed. Check downloaded release files with `gh attestation
+verify` using the same constraints. If a workflow/token compromise is suspected,
+stop publication, revoke the affected credentials, investigate the exact signed
+source and workflow, and publish a reviewed replacement release with an advisory.
+Do not silently replace already published release archives. GitHub OIDC supplies
+the signing identity; there is no repository-held long-lived signing key to rotate.
+
+The minimum supported runtime is the tested OS/libc recorded in each acceptance
+report. Do not infer a lower baseline from Rust target support or successful linking.

@@ -5,6 +5,11 @@ mod render;
 
 pub use render::render_new_manifest;
 
+/// Parse a manifest without filesystem access or project-state mutation.
+pub fn decode(raw: &str, source_path: PathBuf) -> Result<Manifest, String> {
+    parse::parse_manifest(raw, source_path)
+}
+
 pub const MANIFEST_FILE: &str = "vex.ws";
 
 /// Package names are Wave import identifiers. Never silently normalize a name.
@@ -44,6 +49,8 @@ pub struct Dependency {
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
+    pub format: u32,
+    pub compiler: Option<String>,
     pub name: String,
     pub version: String,
     pub lib: bool,
@@ -89,10 +96,12 @@ impl Manifest {
         })?;
 
         parse::parse_manifest(&raw, source_path.clone()).map_err(|err| {
-            diagnostic::Error::resolution(format!(
-                "failed to load manifest `{}`: {err}",
-                source_path.to_string_lossy()
-            ))
+            diagnostic::Error::resolution(err)
+                .with_field("manifest", source_path.display())
+                .context(format!(
+                    "failed to load manifest `{}`",
+                    source_path.display()
+                ))
         })
     }
 

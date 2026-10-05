@@ -52,7 +52,8 @@ fn run_init(is_lib: bool) -> Result<(), Error> {
         (source_name.as_str(), source_template.to_string()),
         ("vex.lock", lockfile::encode(Lockfile::empty())),
     ];
-    if fs::symlink_metadata(Path::new(".gitignore")).is_err() {
+    let created_ignore = fs::symlink_metadata(Path::new(".gitignore")).is_err();
+    if created_ignore {
         files.push((".gitignore", "/target/\n/.vex/\n".into()));
     }
     files.push((
@@ -63,6 +64,9 @@ fn run_init(is_lib: bool) -> Result<(), Error> {
 
     diagnostic::outln!("initialized Wave project");
     diagnostic::outln!("created {MANIFEST_FILE}, vex.lock, and src/{source_file}");
+    if created_ignore {
+        diagnostic::outln!("created .gitignore");
+    }
     Ok(())
 }
 

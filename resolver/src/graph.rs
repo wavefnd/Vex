@@ -20,8 +20,10 @@ pub(crate) struct Resolver<'a> {
     existing: &'a Lockfile,
     packages: BTreeMap<String, LockedPackage>,
     requests: HashMap<String, RequestKey>,
+    request_origins: HashMap<String, (String, String)>,
     visiting: Vec<String>,
     status: &'a mut dyn FnMut(&str, String),
+    validate: &'a mut dyn FnMut(&Manifest) -> Result<(), Error>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +52,7 @@ impl<'a> Resolver<'a> {
         root_manifest: PathBuf,
         existing: &'a Lockfile,
         status: &'a mut dyn FnMut(&str, String),
+        validate: &'a mut dyn FnMut(&Manifest) -> Result<(), Error>,
     ) -> Self {
         Self {
             options,
@@ -61,8 +64,10 @@ impl<'a> Resolver<'a> {
             existing,
             packages: BTreeMap::new(),
             requests: HashMap::new(),
+            request_origins: HashMap::new(),
             visiting: Vec::new(),
             status,
+            validate,
         }
     }
 
@@ -160,19 +165,25 @@ impl<'a> Resolver<'a> {
         &mut self,
         manifest: &Manifest,
     ) -> Result<Vec<String>, Error> {
+        (self.validate)(manifest).map_err(|error| {
+            error
+                .with_field("package", &manifest.name)
+                .with_field("manifest", manifest.source_path.display())
+        })?;
         let mut dependencies = Vec::new();
-        for dependency in &manifest.dependencies {
+        let mut edges: Vec<_> = manifest.dependencies.iter().collect();
+        edges.sort_by(|a, b| a.name.cmp(&b.name));
+        for dependency in edges {
             self.resolve_dependency(dependency, &manifest.source_path)
                 .map_err(|error| {
-                    Error::new(
-                        error.category,
-                        format!(
-                            "failed to resolve dependency `{}` from `{}`\n\nCaused by:\n  {}",
+                    error
+                        .with_field("package", &dependency.name)
+                        .with_field("manifest", manifest.source_path.display())
+                        .context(format!(
+                            "failed to resolve dependency `{}` from `{}`\n\nCaused by",
                             dependency.name,
-                            manifest.source_path.display(),
-                            indent_lines(&error)
-                        ),
-                    )
+                            manifest.source_path.display()
+                        ))
                 })?;
             dependencies.push(dependency.name.clone());
         }
@@ -221,12 +232,21 @@ impl<'a> Resolver<'a> {
             },
         };
 
+        let chain = std::iter::once(self.root_name.as_str())
+            .chain(self.visiting.iter().map(String::as_str))
+            .chain(std::iter::once(dependency.name.as_str()))
+            .collect::<Vec<_>>()
+            .join(" -> ");
         if let Some(previous) = self.requests.get(&dependency.name) {
             if previous != &key {
                 return Err(Error::resolution(format!(
-                    "package name `{}` refers to more than one source or version requirement",
-                    dependency.name
-                )));
+                    "package name `{}` refers to more than one source or version requirement\nfirst: {} ({})\nsecond: {} ({})",
+                    dependency.name, self.request_origins[&dependency.name].0,
+                    self.request_origins[&dependency.name].1, chain, parent_manifest.display()
+                )).with_field("first_dependency_path", &self.request_origins[&dependency.name].0)
+                  .with_field("second_dependency_path", &chain)
+                  .with_field("first_request", format!("{previous:?}"))
+                  .with_field("second_request", format!("{key:?}")));
             }
             if let Some(package) = self.packages.get_mut(&dependency.name) {
                 if self.existing.package(&dependency.name).is_none() {
@@ -241,6 +261,10 @@ impl<'a> Resolver<'a> {
                 return Ok(());
             }
         } else {
+            self.request_origins.insert(
+                dependency.name.clone(),
+                (chain.clone(), parent_manifest.display().to_string()),
+            );
             self.requests.insert(dependency.name.clone(), key);
         }
 
@@ -254,7 +278,9 @@ impl<'a> Resolver<'a> {
             return Err(Error::resolution(format!(
                 "dependency cycle detected: {}",
                 cycle.join(" -> ")
-            )));
+            ))
+            .with_field("dependency_path", cycle.join(" -> "))
+            .with_field("manifest", parent_manifest.display()));
         }
 
         let (resolved_path, locked_source) = match &dependency.source {
@@ -369,6 +395,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     self.resolve_git_commit(dependency, &destination)?
                 };
+                git::reject_submodules(&destination, name, &commit)?;
                 let source = LockedSource::Git {
                     url: source::identity(url),
                     branch: branch.clone(),
@@ -382,7 +409,10 @@ impl<'a> Resolver<'a> {
         };
 
         let manifest_path = resolved_path.join(MANIFEST_FILE);
-        let package_manifest = Manifest::load_from(&manifest_path)?;
+        let package_manifest = Manifest::load_from(&manifest_path).map_err(|e| {
+            e.with_field("package", &dependency.name)
+                .with_field("operation", "load dependency manifest")
+        })?;
         if package_manifest.name != dependency.name {
             return Err(Error::resolution(format!(
                 "dependency is named `{}` but `{}` declares package `{}`",
@@ -519,12 +549,7 @@ impl<'a> Resolver<'a> {
         if let Some(commit) = locked {
             if !git::has_commit(destination, &commit)? {
                 (self.status)("Fetching", format!("{} ({url})", dependency.name));
-                git::fetch(destination, url)?;
-                if !git::has_commit(destination, &commit)? {
-                    return Err(Error::resolution(format!(
-                        "locked Git commit `{commit}` is not available from the declared source"
-                    )));
-                }
+                git::fetch_exact(destination, url, &dependency.name, &commit)?;
             }
             git::checkout_commit(destination, &dependency.name, &commit, unborn)?;
             return Ok(commit);
@@ -546,10 +571,6 @@ impl<'a> Resolver<'a> {
         git::checkout_commit(destination, &dependency.name, &commit, unborn)?;
         Ok(commit)
     }
-}
-
-fn indent_lines(message: &str) -> String {
-    message.replace('\n', "\n  ")
 }
 
 #[cfg(test)]

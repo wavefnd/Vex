@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "platforms": [
+    {
+      "id": "linux-amd64",
+      "os": "linux",
+      "arch": "x86_64",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "wave_target": "x86_64-linux-gnu",
+      "runner": "ubuntu-24.04",
+      "executor": "native",
+      "archive": "tar.gz"
+    },
+    {
+      "id": "linux-arm64",
+      "os": "linux",
+      "arch": "aarch64",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "wave_target": "aarch64-linux-gnu",
+      "runner": "ubuntu-24.04-arm",
+      "executor": "native",
+      "archive": "tar.gz"
+    },
+    {
+      "id": "linux-riscv64",
+      "os": "linux",
+      "arch": "riscv64",
+      "rust_target": "riscv64gc-unknown-linux-gnu",
+      "wave_target": "riscv64-linux-gnu",
+      "runner": "ubuntu-24.04",
+      "executor": "qemu",
+      "archive": "tar.gz",
+      "oci_platform": "linux/riscv64",
+      "image": "debian@sha256:e3b4cb1b0056896c4b43e17472b906b10007ab94bc533d37a47e9a5795eebbc0"
+    },
+    {
+      "id": "linux-loongarch64",
+      "os": "linux",
+      "arch": "loongarch64",
+      "rust_target": "loongarch64-unknown-linux-gnu",
+      "wave_target": "loongarch64-linux-gnu",
+      "runner": "ubuntu-24.04",
+      "executor": "qemu",
+      "archive": "tar.gz",
+      "oci_platform": "linux/loong64",
+      "image": "ghcr.io/loong64/debian@sha256:f58d4dbdfc29497e5228fd5f418319d76842f257940c746d948dfe67b4e16ba9"
+    },
+    {
+      "id": "macos-amd64",
+      "os": "macos",
+      "arch": "x86_64",
+      "rust_target": "x86_64-apple-darwin",
+      "wave_target": "x86_64-apple-darwin",
+      "runner": "macos-15-intel",
+      "executor": "native",
+      "archive": "tar.gz"
+    },
+    {
+      "id": "macos-arm64",
+      "os": "macos",
+      "arch": "aarch64",
+      "rust_target": "aarch64-apple-darwin",
+      "wave_target": "aarch64-apple-darwin",
+      "runner": "macos-15",
+      "executor": "native",
+      "archive": "tar.gz"
+    },
+    {
+      "id": "windows-amd64",
+      "os": "windows",
+      "arch": "x86_64",
+      "rust_target": "x86_64-pc-windows-msvc",
+      "wave_target": "x86_64-pc-windows-msvc",
+      "runner": "windows-2025",
+      "executor": "native",
+      "archive": "zip"
+    },
+    {
+      "id": "windows-arm64",
+      "os": "windows",
+      "arch": "aarch64",
+      "rust_target": "aarch64-pc-windows-msvc",
+      "wave_target": "aarch64-pc-windows-msvc",
+      "runner": "windows-11-vs2026-arm",
+      "executor": "native",
+      "archive": "zip"
+    },
+    {
+      "id": "freebsd-amd64",
+      "os": "freebsd",
+      "arch": "x86_64",
+      "rust_target": "x86_64-unknown-freebsd",
+      "wave_target": "x86_64-unknown-freebsd",
+      "runner": "ubuntu-24.04",
+      "executor": "vm",
+      "archive": "tar.gz"
+    }
+  ]
+}

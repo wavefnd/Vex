@@ -49,3 +49,26 @@ pub fn supervised(mut error: Error) -> Error {
     }
     error
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn typed_results_map_without_exiting_the_process() {
+        assert_eq!(Outcome::success().code, 0);
+        for (category, code) in [
+            (Category::Internal, 1),
+            (Category::Usage, 2),
+            (Category::Resolution, 3),
+            (Category::Compiler, 4),
+            (Category::Environment, 5),
+            (Category::Timeout, 124),
+            (Category::Cancelled, 130),
+        ] {
+            let result = Outcome::error(&Error::new(category, "fixture"));
+            assert_eq!(result.code, code);
+            assert_eq!(result.origin, "vex");
+            assert_eq!(result.category, category.name());
+        }
+    }
+}

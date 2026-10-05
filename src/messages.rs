@@ -60,6 +60,10 @@ impl Messages {
         })
     }
 
+    pub fn enabled(&self) -> bool {
+        self.file.is_some()
+    }
+
     pub fn emit(&mut self, mut value: Value) -> Result<(), Error> {
         if self.failed {
             return Err(Error::environment("message file is no longer writable"));
@@ -71,13 +75,28 @@ impl Messages {
         value["schema_version"] = json!(1);
         value["sequence"] = json!(self.sequence);
         value["command"] = json!(source::redact(&self.command));
+        fn redact(value: &mut Value) {
+            match value {
+                Value::String(text) => *text = source::redact(text),
+                Value::Array(items) => items.iter_mut().for_each(redact),
+                Value::Object(fields) => fields.values_mut().for_each(redact),
+                _ => {}
+            }
+        }
+        redact(&mut value);
         let mut bytes = serde_json::to_vec(&value).map_err(Error::internal)?;
         bytes.push(b'\n');
         #[cfg(debug_assertions)]
         let injected = std::env::var("VEX_TEST_MESSAGE_FAIL_AT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            == Some(self.sequence);
+            == Some(self.sequence)
+            || std::env::var("VEX_TEST_MESSAGE_FAIL_EVENT")
+                .ok()
+                .is_some_and(|event| {
+                    value["event"] == event
+                        || (value["event"] == "status" && value["phase"] == event)
+                });
         #[cfg(not(debug_assertions))]
         let injected = false;
         let result = if injected {
@@ -97,6 +116,20 @@ impl Messages {
         self.emit(json!({"event":"status", "phase":phase}))
     }
     pub fn diagnostic(&mut self, error: &Error) -> Result<(), Error> {
-        self.emit(json!({"event":"diagnostic", "severity":"error", "origin":"vex", "category":error.category.name(), "message":source::redact(error.as_ref())}))
+        let mut contexts = Vec::new();
+        let mut causes = Vec::new();
+        let mut current = Some(error);
+        while let Some(item) = current {
+            contexts.extend(
+                item.context_fields
+                    .iter()
+                    .map(|(key, value)| json!({"key":key,"value":source::redact(value)})),
+            );
+            if !std::ptr::eq(item, error) {
+                causes.push(source::redact(item.as_ref()));
+            }
+            current = item.cause.as_deref();
+        }
+        self.emit(json!({"context":contexts,"causes":causes,"event":"diagnostic", "severity":"error", "origin":"vex", "category":error.category.name(), "message":source::redact(error.as_ref())}))
     }
 }

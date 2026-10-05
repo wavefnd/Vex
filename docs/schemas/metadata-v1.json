@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vex metadata v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "root",
+    "packages",
+    "target_directory"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "root": {
+      "$ref": "#/$defs/package"
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/package"
+      }
+    },
+    "target_directory": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "package": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "kind",
+        "root",
+        "manifest_path",
+        "entry_path",
+        "dependencies",
+        "manifest_format",
+        "compiler"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "entry_path": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "binary",
+            "library"
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "manifest_format": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "compiler": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "path",
+                "git"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

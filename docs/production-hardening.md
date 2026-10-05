@@ -1,8 +1,8 @@
 # Unreleased production hardening
 
-This branch builds on #145. It does not assign a release version or publish a
-release. Rust 1.96.0 and the existing eight required master checks remain the
-supported build/merge contract.
+These contracts are included in the `0.0.2-beta` release preparation. Rust
+1.96.0 is the supported toolchain. Quality and all nine platform acceptance
+checks must pass before release. See [RELEASING](../RELEASING.md).
 
 ## Changes and compatibility
 
@@ -134,5 +134,6 @@ not substitute for native Windows/macOS CI on this PR or an actual release run.
 Do not mark all referenced issues closed from this document alone.
 
 Wave v0.2.0-pre-beta remains incompatible with canonical package imports despite
-passing version/Hello World checks. #66/#131 stay deferred until the next compatible
-official release; a locally built development compiler is only a manual smoke tool.
+passing version/Hello World checks. #66/#131 require public `v0.2.1-pre-beta` artifacts on all nine hosts.
+The required checks reject draft assets and do not substitute a local development
+compiler. Until those checks pass, this remains release preparation evidence.

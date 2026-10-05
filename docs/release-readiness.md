@@ -99,7 +99,7 @@ packages. Regenerate and review these when Cargo.lock changes; CI checks their
 lockfile fingerprint with CRLF normalized to LF. Known-vulnerability scans are time-specific release
 evidence and must be repeated for the eventual release commit.
 
-Master requires PRs, all eight current CI checks and an up-to-date base. Force
+Master requires PRs, Quality and all nine platform acceptance checks and an up-to-date base. Force
 pushes and branch deletion are prohibited. There are no bypass actors;
 administrators must also meet the PR and check requirements.
 
@@ -123,11 +123,11 @@ The additive `<archive>.metadata.json` has schema 1 and records compiler version
 source SHA, std compatibility revision, target/ABI, payload paths, external
 prerequisites, archive name and SHA-256. Metadata target triples are compiler
 triples; archive names normalize Linux `unknown` and RISC-V `gc` components.
-Vex continues to require the published `SHA256SUMS` and verify available
-provenance. It does not yet use this additive sidecar to authorize installation
+Vex requires official `SHA256SUMS` or the GitHub release asset SHA-256 digest
+and verifies available provenance. When both digests exist they must agree. It does not yet use this additive sidecar to authorize installation
 or require it for older releases.
 
-The #154 fixtures cover all eight names, missing assets without GNU fallback,
+The #154 fixtures cover all nine host mappings, missing assets without GNU fallback,
 both MSVC ZIPs and the LoongArch64 TAR, checksum failures, compiler discovery,
 preserved std/runtime layout and preservation of the previous installation.
 Foreign fixture files are data, not executable compiler validation. Actual
@@ -146,7 +146,7 @@ credential rendering tests remain part of the full workspace suite. An issue's
 completion requires its acceptance criteria and native CI evidence, not only
 these implementation references.
 
-The next planned compatible Wave release is `v0.2.1-pre-beta` on October 5, 2026.
+The required compatible Wave release is `v0.2.1-pre-beta` on October 5, 2026.
 Until its official artifact exists, a local development-compiler smoke is development
 evidence only. It does not establish the artifact's compatibility or exact source
 commit, and it does not replace native CI. No compiler source-build gate is added.
@@ -168,7 +168,9 @@ public reexports, private-symbol rejection, locked/offline reuse and metadata.
 The local Git remote is removed before offline checks. Missing backend/runtime
 prerequisites must fail the smoke rather than silently skip it.
 
-After validating the official artifact and its required host dependencies, pin
-its verified identity in compiler CI and activate the required gate (#66/#131).
-That activation and native release/lockfile acceptance (#75/#79) remain release
-work; passing local Rust tests or a development compiler does not close them.
+The required nine-platform CI now pins the expected official archive digests in
+`tools/wave-release.json`. Each lane executes the full test suite, a packaged Vex,
+verified compiler installation, and this real Wave smoke. RISC-V and LoongArch
+execute target userspace through QEMU; FreeBSD uses a VM. Cross compilation alone
+cannot produce acceptance. The public artifact checks and eventual release run
+must pass before release; local candidate results do not satisfy those gates.

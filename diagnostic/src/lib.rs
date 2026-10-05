@@ -39,12 +39,16 @@ impl Category {
 pub struct Error {
     pub category: Category,
     message: String,
+    pub context_fields: Vec<(String, String)>,
+    pub cause: Option<Box<Error>>,
 }
 impl Error {
     pub fn new(category: Category, message: impl fmt::Display) -> Self {
         Self {
             category,
             message: message.to_string(),
+            context_fields: Vec::new(),
+            cause: None,
         }
     }
     pub fn internal(message: impl fmt::Display) -> Self {
@@ -63,7 +67,13 @@ impl Error {
         Self::new(Category::Environment, message)
     }
     pub fn context(self, message: impl fmt::Display) -> Self {
-        Self::new(self.category, format!("{message}: {self}"))
+        let mut outer = Self::new(self.category, format!("{message}: {self}"));
+        outer.cause = Some(Box::new(self));
+        outer
+    }
+    pub fn with_field(mut self, key: impl Into<String>, value: impl fmt::Display) -> Self {
+        self.context_fields.push((key.into(), value.to_string()));
+        self
     }
 }
 impl fmt::Display for Error {
@@ -71,7 +81,11 @@ impl fmt::Display for Error {
         self.message.fmt(f)
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_deref().map(|e| e as &dyn std::error::Error)
+    }
+}
 impl AsRef<str> for Error {
     fn as_ref(&self) -> &str {
         &self.message

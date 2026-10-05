@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vex JSONL message v1 (one object per line)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "sequence",
+    "command",
+    "event"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "command": {
+      "type": "string"
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "started"
+        }
+      }
+    },
+    {
+      "required": [
+        "phase",
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "status"
+        },
+        "phase": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "required": [
+        "severity",
+        "origin",
+        "category",
+        "message",
+        "context",
+        "causes",
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "diagnostic"
+        },
+        "severity": {
+          "const": "error"
+        },
+        "origin": {
+          "const": "vex"
+        },
+        "category": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "causes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "required": [
+        "origin",
+        "compiler",
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "compiler-diagnostic"
+        },
+        "origin": {
+          "const": "vex"
+        },
+        "compiler": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "required": [
+        "origin",
+        "target",
+        "emit",
+        "paths",
+        "executable",
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "artifact"
+        },
+        "origin": {
+          "const": "vex"
+        },
+        "target": {
+          "type": "string"
+        },
+        "emit": {
+          "type": "string"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "executable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "required": [
+        "success",
+        "origin",
+        "category",
+        "exit_code",
+        "signal",
+        "event"
+      ],
+      "properties": {
+        "event": {
+          "const": "finished"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "origin": {
+          "enum": [
+            "vex",
+            "program"
+          ]
+        },
+        "category": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "signal": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  ]
+}

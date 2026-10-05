@@ -38,6 +38,7 @@ impl Fixture {
         cmd.args(args)
             .current_dir(&self.root)
             .env("VEX_WAVEC", &self.compiler)
+            .env_remove("NO_COLOR")
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         cmd
@@ -64,6 +65,9 @@ impl Barrier {
         loop {
             match self.0.accept() {
                 Ok((mut socket, _)) => {
+                    // BSD/macOS can inherit the listener's nonblocking mode.
+                    // The handshake uses a bounded blocking read on every OS.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(15)))
                         .unwrap();
@@ -429,12 +433,17 @@ fn dry_run_validates_message_destination_without_creating_it() {
 #[test]
 fn message_failure_before_spawn_stops_run_but_after_run_preserves_exit() {
     let f = Fixture::new();
-    // started=1, compiler=2, running=3, finished=4.
-    for (sequence, expected, ran) in [(1, 5, false), (2, 5, false), (3, 5, false), (4, 42, true)] {
-        let report = format!("fail-{sequence}.jsonl");
+    for (event, expected, ran) in [
+        ("started", 5, false),
+        ("compiler", 5, false),
+        ("artifact", 5, false),
+        ("running", 5, false),
+        ("finished", 42, true),
+    ] {
+        let report = format!("fail-{event}.jsonl");
         let output = f
             .command(&["--message-file", &report, "run", "--locked", "--offline"])
-            .env("VEX_TEST_MESSAGE_FAIL_AT", sequence.to_string())
+            .env("VEX_TEST_MESSAGE_FAIL_EVENT", event)
             .env("VEX_TEST_RUN_EXIT", "42")
             .stdout(Stdio::piped())
             .output()
@@ -459,7 +468,7 @@ fn message_failure_before_spawn_stops_run_but_after_run_preserves_exit() {
             "--locked",
             "--offline",
         ])
-        .env("VEX_TEST_MESSAGE_FAIL_AT", "4")
+        .env("VEX_TEST_MESSAGE_FAIL_EVENT", "finished")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
@@ -550,4 +559,161 @@ fn metadata_acquires_shared_lease_before_reading_lockfile() {
     assert!(result.status.success());
     let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(value["schema_version"], 1);
+}
+
+#[test]
+fn compiler_version_requirement_fails_before_dependency_state_changes() {
+    let fixture = Fixture::new();
+    let lock = fs::read(fixture.root.join("vex.lock")).unwrap();
+    fs::write(
+        fixture.root.join("vex.ws"),
+        "{format=2,name=\"app\",compiler=\"0.2.0-pre-beta\"}",
+    )
+    .unwrap();
+    for command in ["build", "check", "run"] {
+        let output = fixture.command(&[command]).output().unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("0.2.0-pre-beta") && error.contains("0.2.1-pre-beta"),
+            "{error}"
+        );
+        assert!(!fixture.root.join(".vex").exists());
+        assert!(!fixture.root.join("target").exists());
+        assert_eq!(fs::read(fixture.root.join("vex.lock")).unwrap(), lock);
+    }
+    fs::write(
+        fixture.root.join("vex.ws"),
+        "{format=2,name=\"app\",compiler=\"0.2.1-pre-beta\"}",
+    )
+    .unwrap();
+    assert!(fixture
+        .command(&["check", "--locked", "--offline"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+}
+
+#[test]
+fn transitive_compiler_requirement_rejects_before_lock_publication() {
+    let fixture = Fixture::new();
+    let lock = fs::read(fixture.root.join("vex.lock")).unwrap();
+    for path in ["middle", "middle/leaf"] {
+        fs::create_dir_all(fixture.root.join(path).join("src")).unwrap();
+        fs::write(
+            fixture.root.join(path).join("src/lib.wave"),
+            "pub fun value() {}\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        fixture.root.join("vex.ws"),
+        "{name=\"app\",dependencies=[{name=\"middle\",path=\"middle\"}]}",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("middle/vex.ws"),
+        "{name=\"middle\",lib=true,dependencies=[{name=\"leaf\",path=\"leaf\"}]}",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("middle/leaf/vex.ws"),
+        "{name=\"leaf\",lib=true,compiler=\"0.2.0-pre-beta\"}",
+    )
+    .unwrap();
+    let output = fixture.command(&["check"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("leaf")
+            && error.contains("0.2.0-pre-beta")
+            && error.contains("0.2.1-pre-beta"),
+        "{error}"
+    );
+    assert_eq!(fs::read(fixture.root.join("vex.lock")).unwrap(), lock);
+    assert!(!fixture.root.join("target").exists());
+    fs::write(
+        fixture.root.join("middle/leaf/vex.ws"),
+        "{name=\"leaf\",lib=true,compiler=\"0.2.1-pre-beta\"}",
+    )
+    .unwrap();
+    assert!(fixture
+        .command(&["check"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+}
+
+#[test]
+fn run_status_only_reports_completed_successful_boundaries() {
+    let fixture = Fixture::new();
+    for (failure, code, running, finished) in [
+        ("VEX_TEST_COMPILE_EXIT", "1", false, false),
+        ("VEX_TEST_RUN_EXIT", "42", true, false),
+        ("VEX_TEST_RUN_EXIT", "0", true, true),
+    ] {
+        let output = fixture
+            .command(&["run"])
+            .env(failure, code)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.contains("Running"), running, "{stderr}");
+        assert_eq!(stderr.contains("Finished"), finished, "{stderr}");
+    }
+}
+
+#[test]
+fn conflict_reports_both_dependency_paths_as_structured_context() {
+    let fixture = Fixture::new();
+    for (directory, name, dependency) in [
+        ("alpha", "alpha", Some("../first")),
+        ("beta", "beta", Some("../second")),
+        ("first", "shared", None),
+        ("second", "shared", None),
+    ] {
+        let root = fixture.root.join(directory);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.wave"), "pub fun value() {}\n").unwrap();
+        let dependency = dependency
+            .map(|path| format!(",dependencies=[{{name=\"shared\",path=\"{path}\"}}]"))
+            .unwrap_or_default();
+        fs::write(
+            root.join("vex.ws"),
+            format!("{{name=\"{name}\",lib=true{dependency}}}"),
+        )
+        .unwrap();
+    }
+    fs::write(fixture.root.join("vex.ws"), "{name=\"app\",dependencies=[{name=\"alpha\",path=\"alpha\"},{name=\"beta\",path=\"beta\"}]}").unwrap();
+    let lock = fs::read(fixture.root.join("vex.lock")).unwrap();
+    let output = fixture
+        .command(&["--message-file", "conflict.jsonl", "check"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let events: Vec<serde_json::Value> = fs::read_to_string(fixture.root.join("conflict.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let diagnostic = events
+        .iter()
+        .find(|event| event["event"] == "diagnostic")
+        .unwrap();
+    let context = diagnostic["context"].as_array().unwrap();
+    for (key, value) in [
+        ("first_dependency_path", "app -> alpha -> shared"),
+        ("second_dependency_path", "app -> beta -> shared"),
+    ] {
+        assert!(
+            context
+                .iter()
+                .any(|item| item["key"] == key && item["value"] == value),
+            "{diagnostic}"
+        );
+    }
+    assert!(!diagnostic["causes"].as_array().unwrap().is_empty());
+    assert_eq!(fs::read(fixture.root.join("vex.lock")).unwrap(), lock);
 }

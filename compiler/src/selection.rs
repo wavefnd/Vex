@@ -7,6 +7,7 @@ use std::time::Duration;
 pub struct Compiler {
     pub(crate) path: PathBuf,
     targets: Option<Vec<String>>,
+    version: Option<String>,
 }
 
 impl Compiler {
@@ -55,7 +56,46 @@ impl Compiler {
         Ok(Self {
             path,
             targets: None,
+            version: None,
         })
+    }
+
+    pub fn validate_version(&mut self, required: Option<&str>) -> Result<(), Error> {
+        let Some(required) = required else {
+            return Ok(());
+        };
+        let version = self.version()?.to_owned();
+        if version != required {
+            return Err(Error::resolution(format!(
+                "compiler version mismatch: project requires {required}, selected wavec is {} at {}\nhelp: install the required compiler and select it with VEX_WAVEC; capability/schema checks remain independent",
+                version, self.path.display())));
+        }
+        Ok(())
+    }
+
+    pub fn version(&mut self) -> Result<&str, Error> {
+        if self.version.is_none() {
+            let output = process::output(
+                Command::new(&self.path)
+                    .arg("--version")
+                    .env("NO_COLOR", "1"),
+                Duration::from_secs(60),
+            )
+            .map_err(Error::environment)?;
+            if !output.status.success() {
+                return Err(Error::compiler(format!(
+                    "cannot query compiler version at {}",
+                    self.path.display()
+                )));
+            }
+            let text = String::from_utf8(output.stdout).map_err(Error::compiler)?;
+            let tokens: Vec<_> = text.split_whitespace().collect();
+            if tokens.len() < 2 || tokens[0] != "wavec" {
+                return Err(Error::compiler("malformed wavec version response"));
+            }
+            self.version = Some(tokens[1].to_owned());
+        }
+        Ok(self.version.as_deref().unwrap())
     }
 
     pub fn validate_target(&mut self, target: &str) -> Result<(), Error> {

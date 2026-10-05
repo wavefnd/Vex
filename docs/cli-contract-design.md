@@ -127,3 +127,14 @@ Cross-platform process fixtures cover category/origin reporting and report write
 failures. Unix tests additionally distinguish direct program signal termination
 from Vex cancellation. Forced aborts and operating-system termination cannot be
 guaranteed to emit a final event. Missing final events always mean incomplete.
+
+## Structured compiler and artifact events
+
+With `--message-file`, compiler diagnostics are recorded as `compiler-diagnostic`
+events containing the original JSON payload, including source spans. Compiler
+stdout/stderr is bounded during this reporting mode; user-program streams and TTY
+remain inherited. `artifact` events record target, emit kind, output paths and the
+run executable before the program starts. Vex diagnostic events include structured
+context fields and cause chains. Neither human messages nor localized compiler text
+is reparsed to assign an exit category. Report writes still stop work before runtime
+starts and never replace an already executed program's exit status.

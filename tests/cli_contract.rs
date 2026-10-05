@@ -689,3 +689,97 @@ fn message_diagnostics_redact_credential_bearing_arguments() {
     }
     assert!(text.contains("example.invalid"));
 }
+
+#[test]
+fn help_is_order_independent_and_never_initializes_a_project() {
+    let fixture = TestDir::new();
+    for command in [
+        "init", "build", "check", "run", "fetch", "update", "info", "tree", "metadata", "setup",
+    ] {
+        for args in [
+            [command, "--unknown", "--help"],
+            [command, "--help", "--unknown"],
+        ] {
+            assert_success(&vex(&fixture.0, &args), "mixed help");
+        }
+    }
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+}
+
+#[test]
+fn version_has_no_ansi_when_redirected_or_no_color_is_set() {
+    let fixture = TestDir::new();
+    for no_color in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vex"));
+        command.current_dir(&fixture.0).arg("--version");
+        if no_color {
+            command.env("NO_COLOR", "1");
+        }
+        let output = command.output().unwrap();
+        assert_success(&output, "plain version");
+        assert!(!output.stdout.contains(&0x1b));
+    }
+}
+
+#[test]
+fn missing_canonical_entry_never_selects_arbitrary_sources() {
+    let fixture = TestDir::new();
+    fs::create_dir(fixture.0.join("src")).unwrap();
+    fs::write(
+        fixture.0.join("src/other.wave"),
+        "// fun main() in a comment\n",
+    )
+    .unwrap();
+    for (lib, entry) in [(false, "src/main.wave"), (true, "src/lib.wave")] {
+        fs::write(
+            fixture.0.join("vex.ws"),
+            format!("{{name=\"app\",lib={lib}}}"),
+        )
+        .unwrap();
+        for mode in ["build", "check", "run"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_vex"))
+                .current_dir(&fixture.0)
+                .env("VEX_WAVEC", fixture.0.join("must_not_run"))
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(3),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if !(lib && mode == "run") {
+                assert!(String::from_utf8_lossy(&output.stderr).contains(entry));
+            }
+            assert!(!fixture.0.join("target").exists());
+            assert!(!fixture.0.join(".vex").exists());
+        }
+    }
+}
+
+#[test]
+fn init_reports_ignore_creation_only_when_created() {
+    let fixture = TestDir::new();
+    for lib in [false, true] {
+        for existing in [false, true] {
+            let project = fixture.0.join(format!("app_{}_{}", lib, existing));
+            fs::create_dir(&project).unwrap();
+            if existing {
+                fs::write(project.join(".gitignore"), "mine\n").unwrap();
+            }
+            let output = vex(&project, if lib { &["init", "--lib"] } else { &["init"] });
+            assert_success(&output, "init");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).contains("created .gitignore"),
+                !existing
+            );
+            if existing {
+                assert_eq!(
+                    fs::read_to_string(project.join(".gitignore")).unwrap(),
+                    "mine\n"
+                );
+            }
+        }
+    }
+}

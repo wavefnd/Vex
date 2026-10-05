@@ -72,16 +72,12 @@ class Verification:
     verifier: str | None
 
 
+PLATFORMS = json.loads((ROOT / "platforms.json").read_text(encoding="utf-8"))["platforms"]
 SUPPORTED_TARGETS = {
-    target.triple: target
-    for target in (
-        Target("x86_64-unknown-linux-gnu", "Linux", "amd64", "tar.gz"),
-        Target("aarch64-unknown-linux-gnu", "Linux", "arm64", "tar.gz"),
-        Target("riscv64gc-unknown-linux-gnu", "Linux", "riscv64", "tar.gz"),
-        Target("x86_64-pc-windows-msvc", "Windows", "x64", "zip"),
-        Target("x86_64-apple-darwin", "macOS", "Intel", "tar.gz"),
-        Target("aarch64-apple-darwin", "macOS", "Apple Silicon", "tar.gz"),
-    )
+    item["rust_target"]: Target(item["rust_target"],
+        {"linux": "Linux", "macos": "macOS", "windows": "Windows", "freebsd": "FreeBSD"}[item["os"]],
+        item["arch"], item["archive"])
+    for item in PLATFORMS
 }
 
 

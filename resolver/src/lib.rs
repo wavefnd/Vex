@@ -12,7 +12,15 @@ mod paths;
 mod transaction;
 
 pub fn recover_project(guard: &state::Guard, dry_run: bool) -> Result<(), Error> {
-    transaction::recover(guard.root(), dry_run).map_err(Error::environment)
+    transaction::recover(guard.root(), dry_run).map_err(|error| {
+        Error::environment(error)
+            .with_field("operation", "recover dependency transaction")
+            .with_field("path", guard.root().join(".vex/transaction.json").display())
+            .with_field(
+                "recovery",
+                "run a normal project command to recover; preserve user edits",
+            )
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,10 +91,25 @@ impl Resolution {
 pub fn resolve<F>(
     manifest: &Manifest,
     options: ResolveOptions,
-    mut status: F,
+    status: F,
 ) -> Result<Resolution, Error>
 where
     F: FnMut(&str, String),
+{
+    resolve_validated(manifest, options, status, |_| Ok(()))
+}
+
+/// Validate every candidate manifest before publishing any checkout or lockfile.
+/// The validator runs under the project lease, after pending recovery is handled.
+pub fn resolve_validated<F, V>(
+    manifest: &Manifest,
+    options: ResolveOptions,
+    mut status: F,
+    mut validate: V,
+) -> Result<Resolution, Error>
+where
+    F: FnMut(&str, String),
+    V: FnMut(&Manifest) -> Result<(), Error>,
 {
     if !manifest.dependencies.is_empty() {
         status(
@@ -107,7 +130,7 @@ where
     }
 
     let guard = state::Guard::acquire(options.dry_run, &mut status).map_err(Error::environment)?;
-    resolve_guarded(manifest, options, status, guard)
+    resolve_guarded(manifest, options, status, guard, &mut validate)
 }
 
 /// Inspect only the existing local graph under a read-only shared lease.
@@ -127,6 +150,7 @@ pub fn inspect(
         },
         |_, _| {},
         guard,
+        &mut |_| Ok(()),
     )
     .map_err(|e| {
         Error::new(
@@ -141,6 +165,7 @@ fn resolve_guarded<F: FnMut(&str, String)>(
     options: ResolveOptions,
     mut status: F,
     guard: state::Guard,
+    validate: &mut dyn FnMut(&Manifest) -> Result<(), Error>,
 ) -> Result<Resolution, Error> {
     recover_project(&guard, options.dry_run)?;
     let existing = read_lockfile()?;
@@ -194,6 +219,7 @@ fn resolve_guarded<F: FnMut(&str, String)>(
             root_manifest.clone(),
             &existing,
             &mut status,
+            validate,
         );
         // Local discovery must reuse pinned sources even for selected names.
         preflight.local_preflight();
@@ -219,6 +245,7 @@ fn resolve_guarded<F: FnMut(&str, String)>(
             root_manifest,
             &existing,
             &mut status,
+            validate,
         );
         resolver.resolve_manifest_dependencies(manifest)?;
         resolver.validate_selected_packages()?;

@@ -42,3 +42,8 @@ The same project/graph on the same filesystem produces deterministic output.
 Absolute paths intentionally differ when the project is moved. Object-key order
 is not an API guarantee. Consumers should ignore additive fields in schema v1;
 changes to existing field meanings or types require a new schema version.
+
+Every root/package object exposes `manifest_format` (legacy default 1, escaped
+strings 2) and `compiler` (null or an exact version requirement). These are additive
+schema-1 fields. Metadata still does not invoke a compiler, fetch, recover, or write
+project state. Unsupported future manifest formats fail without migration.

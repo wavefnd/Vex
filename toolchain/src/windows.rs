@@ -47,19 +47,8 @@ pub(crate) fn install(args: &[String]) -> Result<(), String> {
         false,
     );
     let cleanup = remove_installer(&script);
-    let status = match result {
-        Ok(status) => status,
-        Err(error) => {
-            return Err(format!(
-                "wavec installer failed: {error}; cleanup: {cleanup:?}"
-            ))
-        }
-    };
-    if !status.success() {
-        return Err(format!(
-            "wavec installer failed: {status}; cleanup: {cleanup:?}"
-        ));
-    }
-    cleanup?;
-    Ok(())
+    crate::finish_installer(
+        result.map(|status| (status.success(), status.to_string())),
+        cleanup,
+    )
 }

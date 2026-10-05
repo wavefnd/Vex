@@ -50,23 +50,27 @@ pub(super) fn version(value: &str) -> Result<String, String> {
 }
 
 fn target(os: &str, arch: &str) -> Result<&'static str, String> {
-    match (os, arch) {
-        ("linux", "x86_64") => Ok("x86_64-linux-gnu"),
-        ("linux", "aarch64") => Ok("aarch64-linux-gnu"),
-        ("linux", "riscv64") => Ok("riscv64-linux-gnu"),
-        ("linux", "loongarch64") => Ok("loongarch64-linux-gnu"),
-        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
-        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
-        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
-        ("windows", "aarch64") => Ok("aarch64-pc-windows-msvc"),
-        _ => Err(error(format!(
-            "no supported compiler artifact for host {os}/{arch}"
-        ))),
-    }
+    static PLATFORMS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let table = PLATFORMS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../platforms.json"))
+            .expect("validated platform table")
+    });
+    table["platforms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["os"] == os && p["arch"] == arch)
+        .and_then(|p| p["wave_target"].as_str())
+        .ok_or_else(|| {
+            error(format!(
+                "no supported compiler artifact for host {os}/{arch}"
+            ))
+        })
 }
 
 fn curl(url: &str) -> Command {
     let mut command = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+    command.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
     command.args([
         "--disable",
         "--fail",
@@ -88,6 +92,14 @@ fn curl(url: &str) -> Command {
     command
 }
 fn get(url: &str) -> Result<Vec<u8>, String> {
+    if url.starts_with("https://api.github.com/repos/wavefnd/Wave/") {
+        let (status, body) = api(url)?;
+        return if status == 200 {
+            Ok(body)
+        } else {
+            Err(error(format!("GitHub API query failed with HTTP {status}")))
+        };
+    }
     let output = process::output(&mut curl(url), Duration::from_secs(310)).map_err(error)?;
     if !output.status.success() {
         return Err(error(format!(
@@ -123,7 +135,8 @@ struct ReleasePlan {
     version: String,
     name: String,
     archive_url: String,
-    checksum_url: String,
+    checksum_url: Option<String>,
+    asset_digest: Option<String>,
 }
 fn select_release(
     release: &Value,
@@ -163,13 +176,34 @@ fn select_release(
         Ok(url)
     };
     let archive_url = asset(&name)?.to_owned();
-    let checksum_url = asset("SHA256SUMS")?.to_owned();
+    let checksum_url = if assets.iter().any(|a| a["name"] == "SHA256SUMS") {
+        Some(asset("SHA256SUMS")?.to_owned())
+    } else {
+        None
+    };
+    let digest_value = &assets.iter().find(|a| a["name"] == name).unwrap()["digest"];
+    let asset_digest = if digest_value.is_null() {
+        None
+    } else {
+        let digest = digest_value
+            .as_str()
+            .and_then(|s| s.strip_prefix("sha256:"))
+            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| error("invalid official asset SHA-256 digest"))?;
+        Some(digest.to_ascii_lowercase())
+    };
+    if checksum_url.is_none() && asset_digest.is_none() {
+        return Err(error(
+            "release has neither SHA256SUMS nor an official asset SHA-256 digest",
+        ));
+    }
     Ok(ReleasePlan {
         tag: tag.into(),
         version,
         name,
         archive_url,
         checksum_url,
+        asset_digest,
     })
 }
 
@@ -188,9 +222,25 @@ pub fn install(requested: Option<&str>) -> Result<PathBuf, String> {
         name,
         archive_url,
         checksum_url,
+        asset_digest,
     } = select_release(&release, requested.as_deref(), target, extension)?;
-    let checksum_text = String::from_utf8(get(&checksum_url)?).map_err(error)?;
-    let expected = checksum(&checksum_text, &name)?;
+    let checksum_digest = checksum_url
+        .as_deref()
+        .map(|url| {
+            let text = String::from_utf8(get(url)?).map_err(error)?;
+            checksum(&text, &name)
+        })
+        .transpose()?;
+    let expected = agree_digests(checksum_digest.as_deref(), asset_digest.as_deref())?;
+    if let Some(pin) = std::env::var_os("VEX_WAVEC_ARCHIVE_SHA256") {
+        let pin = pin
+            .to_str()
+            .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| error("VEX_WAVEC_ARCHIVE_SHA256 must be a SHA-256 digest"))?;
+        if !pin.eq_ignore_ascii_case(&expected) {
+            return Err(error("official compiler digest differs from VEX_WAVEC_ARCHIVE_SHA256; installation unchanged"));
+        }
+    }
     let root = home()?;
     fs::create_dir_all(&root).map_err(error)?;
     state::reject_link(&root)?;
@@ -224,19 +274,7 @@ pub fn install(requested: Option<&str>) -> Result<PathBuf, String> {
         verify_provenance(&archive, &expected, &tag)?;
         let payload = stage.join("payload");
         let binary = unpack_compiler(&archive, &payload, extension == "zip")?;
-        let output = process::output(
-            Command::new(&binary).arg("--version"),
-            Duration::from_secs(30),
-        )
-        .map_err(error)?;
-        let output_text = String::from_utf8(output.stdout).map_err(error)?;
-        if !output.status.success()
-            || !matches!(output_text.split_whitespace().take(2).collect::<Vec<_>>().as_slice(), ["wavec", actual] if actual.strip_prefix('v').unwrap_or(actual) == version)
-        {
-            return Err(error(
-                "downloaded compiler version does not match the release",
-            ));
-        }
+        verify_binary_version(&binary, &version)?;
         let relative_binary = binary.strip_prefix(&payload).map_err(error)?.to_owned();
         // The checksum makes reinstalling a changed release a distinct generation.
         let generation = format!(
@@ -267,6 +305,33 @@ pub fn install(requested: Option<&str>) -> Result<PathBuf, String> {
             Ok(binary)
         }
     }
+}
+
+fn verify_binary_version(binary: &Path, version: &str) -> Result<(), String> {
+    let output = process::output(
+        Command::new(binary)
+            .arg("--version")
+            .env("NO_COLOR", "1")
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN"),
+        Duration::from_secs(30),
+    )
+    .map_err(error)?;
+    if !output.status.success() {
+        return Err(error(format!(
+            "downloaded compiler could not report its version ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(error)?;
+    if !matches!(output_text.split_whitespace().take(2).collect::<Vec<_>>().as_slice(), ["wavec", actual] if actual.strip_prefix('v').unwrap_or(actual) == version)
+    {
+        return Err(error(format!(
+            "downloaded compiler version does not match the release (expected {version}, received {output_text:?})"
+        )));
+    }
+    Ok(())
 }
 
 fn unpack_compiler(archive: &Path, payload: &Path, zip: bool) -> Result<PathBuf, String> {
@@ -309,12 +374,25 @@ fn publish_candidate(
     Ok(root.join(current))
 }
 
-fn verify_provenance(archive: &Path, digest: &str, tag: &str) -> Result<(), String> {
-    let endpoint =
-        format!("https://api.github.com/repos/wavefnd/Wave/attestations/sha256:{digest}");
-    // An explicit 404 is absence; authentication, rate-limit and transport
-    // failures must not be silently treated as an un-attested release.
+fn api(endpoint: &str) -> Result<(u16, Vec<u8>), String> {
+    let path = endpoint
+        .strip_prefix("https://api.github.com/repos/wavefnd/Wave/")
+        .ok_or_else(|| error("unexpected compiler API endpoint"))?;
+    if std::env::var_os("GH_TOKEN").is_some() {
+        // Authentication is scoped to GitHub API calls, never archive downloads
+        // or the downloaded compiler. gh keeps credentials out of argv/logs.
+        let output = process::output(
+            Command::new("gh")
+                .args(["api", "--hostname", "github.com", "--include"])
+                .arg(format!("repos/wavefnd/Wave/{path}"))
+                .env_remove("GH_DEBUG"),
+            Duration::from_secs(70),
+        )
+        .map_err(error)?;
+        return parse_api_response(&output.stdout);
+    }
     let mut command = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+    command.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
     command.args([
         "--disable",
         "--silent",
@@ -327,27 +405,65 @@ fn verify_provenance(archive: &Path, digest: &str, tag: &str) -> Result<(), Stri
         "60",
         "--write-out",
         "\n%{http_code}",
-        &endpoint,
+        endpoint,
     ]);
     let result = process::output(&mut command, Duration::from_secs(70)).map_err(error)?;
     if !result.status.success() {
-        return Err(error("could not query release provenance"));
+        return Err(error("could not query compiler GitHub API"));
     }
     let response = String::from_utf8(result.stdout).map_err(error)?;
     let (body, status) = response
         .rsplit_once('\n')
-        .ok_or_else(|| error("invalid provenance response"))?;
-    if status == "404" {
+        .ok_or_else(|| error("invalid GitHub API response"))?;
+    Ok((status.parse().map_err(error)?, body.as_bytes().to_vec()))
+}
+
+fn parse_api_response(output: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    let response = String::from_utf8(output.to_vec())
+        .map_err(error)?
+        .replace("\r\n", "\n");
+    let (headers, body) = response
+        .split_once("\n\n")
+        .ok_or_else(|| error("invalid GitHub API response headers"))?;
+    let mut status_line = headers
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    if !status_line
+        .next()
+        .is_some_and(|value| value.starts_with("HTTP/"))
+    {
+        return Err(error("missing GitHub API HTTP status"));
+    }
+    let status = status_line
+        .next()
+        .ok_or_else(|| error("missing GitHub API status code"))?
+        .parse::<u16>()
+        .map_err(error)?;
+    if !(100..600).contains(&status) {
+        return Err(error("invalid GitHub API status code"));
+    }
+    Ok((status, body.as_bytes().to_vec()))
+}
+
+fn verify_provenance(archive: &Path, digest: &str, tag: &str) -> Result<(), String> {
+    let endpoint =
+        format!("https://api.github.com/repos/wavefnd/Wave/attestations/sha256:{digest}");
+    // An explicit 404 is absence; authentication, rate-limit and transport
+    // failures must not be silently treated as an un-attested release.
+    let (status, body) = api(&endpoint)?;
+    if status == 404 {
         let _ = writeln!(
             std::io::stderr().lock(),
             "note: official Wave archive has no published GitHub provenance; SHA-256 verified"
         );
         return Ok(());
     }
-    if status != "200" {
+    if status != 200 {
         return Err(error(format!("provenance query failed with HTTP {status}")));
     }
-    let response: Value = serde_json::from_str(body).map_err(error)?;
+    let response: Value = serde_json::from_slice(&body).map_err(error)?;
     let attestations = response["attestations"]
         .as_array()
         .ok_or_else(|| error("invalid provenance response"))?;
@@ -366,10 +482,27 @@ fn verify_provenance(archive: &Path, digest: &str, tag: &str) -> Result<(), Stri
         .as_str()
         .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or_else(|| error("release tag has no valid source commit"))?;
+    // Use the public API response as a local bundle. gh can verify this without
+    // repository credentials; no CI token crosses into an emulated/VM guest.
+    let bundle_path = archive.with_extension("attestations.jsonl");
+    let mut bundle_file = File::create_new(&bundle_path).map_err(error)?;
+    for attestation in attestations {
+        let bundle = attestation
+            .get("bundle")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| error("published provenance contains an invalid bundle"))?;
+        serde_json::to_writer(&mut bundle_file, bundle).map_err(error)?;
+        bundle_file.write_all(b"\n").map_err(error)?;
+    }
+    drop(bundle_file);
     let verification = process::output(
         Command::new("gh")
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN")
             .args(["attestation", "verify"])
             .arg(archive)
+            .arg("--bundle")
+            .arg(&bundle_path)
             .args([
                 "--repo",
                 "wavefnd/Wave",
@@ -405,6 +538,16 @@ fn create_stage(root: &Path) -> Result<PathBuf, String> {
     }
     Err(error("could not allocate installation staging directory"))
 }
+fn agree_digests(checksum: Option<&str>, asset: Option<&str>) -> Result<String, String> {
+    match (checksum, asset) {
+        (Some(a), Some(b)) if !a.eq_ignore_ascii_case(b) => {
+            Err(error("SHA256SUMS and official asset digest disagree"))
+        }
+        (Some(a), _) | (_, Some(a)) => Ok(a.to_ascii_lowercase()),
+        _ => Err(error("release integrity information is missing")),
+    }
+}
+
 fn checksum(text: &str, filename: &str) -> Result<String, String> {
     let mut found = None;
     for line in text.lines() {
@@ -593,6 +736,67 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_api_preserves_http_errors_instead_of_treating_them_as_absence() {
+        for status in [200, 403, 404, 500] {
+            for newline in ["\n", "\r\n"] {
+                let response = format!("HTTP/2.0 {status} Status{newline}Content-Type: application/json{newline}{newline}{{\"attestations\":[]}}");
+                let (actual, body) = parse_api_response(response.as_bytes()).unwrap();
+                assert_eq!(actual, status);
+                assert_eq!(body, br#"{"attestations":[]}"#);
+            }
+        }
+        for response in ["", "{}", "error 404\n\n{}", "HTTP/2.0 bad\n\n{}"] {
+            assert!(parse_api_response(response.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn version_probe_disables_color_and_distinguishes_execution_failure() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("compiler.rs");
+        fs::write(
+            &source,
+            r#"
+            fn main() {
+                if std::env::current_exe().unwrap().file_stem().unwrap() == "broken" {
+                    eprintln!("missing compiler runtime");
+                    std::process::exit(7);
+                }
+                if std::env::var_os("NO_COLOR").is_some() {
+                    println!("wavec 0.2.1-pre-beta (platform)\n  backend: LLVM 21");
+                } else {
+                    println!("\x1b[32mwavec\x1b[0m \x1b[32m0.2.1-pre-beta\x1b[0m");
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let binary = fixture
+            .0
+            .join(if cfg!(windows) { "wavec.exe" } else { "wavec" });
+        assert!(Command::new("rustc")
+            .arg(source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .unwrap()
+            .success());
+        verify_binary_version(&binary, "0.2.1-pre-beta").unwrap();
+        let mismatch = verify_binary_version(&binary, "0.2.0-pre-beta").unwrap_err();
+        assert!(mismatch.contains("does not match") && mismatch.contains("0.2.1-pre-beta"));
+        let broken = fixture.0.join(if cfg!(windows) {
+            "broken.exe"
+        } else {
+            "broken"
+        });
+        fs::copy(binary, &broken).unwrap();
+        let failure = verify_binary_version(&broken, "0.2.1-pre-beta").unwrap_err();
+        assert!(failure.contains("could not report its version"));
+        assert!(failure.contains("missing compiler runtime"));
+        assert!(!failure.contains("does not match"));
+    }
+
+    #[test]
     fn official_host_mapping_and_asset_names() {
         for (os, arch, expected, extension) in [
             ("linux", "x86_64", "x86_64-linux-gnu", "tar.gz"),
@@ -603,6 +807,7 @@ mod tests {
             ("macos", "aarch64", "aarch64-apple-darwin", "tar.gz"),
             ("windows", "x86_64", "x86_64-pc-windows-msvc", "zip"),
             ("windows", "aarch64", "aarch64-pc-windows-msvc", "zip"),
+            ("freebsd", "x86_64", "x86_64-unknown-freebsd", "tar.gz"),
         ] {
             assert_eq!(target(os, arch).unwrap(), expected);
             let name = format!("wave-v0.2.1-pre-beta-{expected}.{extension}");
@@ -623,15 +828,26 @@ mod tests {
                 .unwrap_err()
                 .contains(&name));
         }
-        for (os, arch) in [
-            ("freebsd", "x86_64"),
-            ("windows", "x86"),
-            ("linux", "arm"),
-            ("linux", "wasm64"),
-        ] {
+        for (os, arch) in [("windows", "x86"), ("linux", "arm"), ("linux", "wasm64")] {
             let message = target(os, arch).unwrap_err();
             assert!(message.contains(&format!("{os}/{arch}")));
         }
+    }
+
+    #[test]
+    fn release_digest_sources_are_strict_and_must_agree() {
+        let name = "wave-v0.2.1-pre-beta-x86_64-linux-gnu.tar.gz";
+        let mut release = fake_release(name);
+        release["assets"].as_array_mut().unwrap().pop();
+        assert!(select_release(&release, None, "x86_64-linux-gnu", "tar.gz").is_err());
+        release["assets"][0]["digest"] = serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+        let plan = select_release(&release, None, "x86_64-linux-gnu", "tar.gz").unwrap();
+        assert!(plan.checksum_url.is_none());
+        assert_eq!(plan.asset_digest.as_deref(), Some("a".repeat(64).as_str()));
+        assert!(agree_digests(Some(&"a".repeat(64)), Some(&"b".repeat(64))).is_err());
+        assert!(agree_digests(None, None).is_err());
+        release["assets"][0]["digest"] = serde_json::json!("sha256:bad");
+        assert!(select_release(&release, None, "x86_64-linux-gnu", "tar.gz").is_err());
     }
 
     fn fake_release(name: &str) -> Value {

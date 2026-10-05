@@ -22,40 +22,42 @@ is exercised separately by `tests/wave_compatibility.py` against a selected comp
 
 ## Platform validation
 
-The targets below have published v0.0.1 release archives. Pull-request CI
-validates the current source on these platforms; this is separate from the
-package and clean-environment smoke tests required for each release.
+Vex 0.0.2-beta targets all nine hosts below. `platforms.json` is authoritative
+for Rust triples, Wave archive names, execution environments, and packaging.
+A platform is accepted only after the complete Rust/Python suites, installed
+release-binary smoke, verified Wave installation, and real package compilation
+and execution pass. A cross-build alone never establishes runtime support.
 
-| Platform | Rust target | CI validation | v0.0.1 status |
-| --- | --- | --- | --- |
-| Linux amd64 | `x86_64-unknown-linux-gnu` | native tests, build, package smoke | Released |
-| Linux arm64 | `aarch64-unknown-linux-gnu` | native tests and build | Released |
-| Windows x64 | `x86_64-pc-windows-msvc` | native tests and build | Released |
-| macOS Intel | `x86_64-apple-darwin` | native tests and build | Released |
-| macOS Apple Silicon | `aarch64-apple-darwin` | native tests and build | Released |
-| Linux RISC-V | `riscv64gc-unknown-linux-gnu` | cross-build and QEMU version smoke | Experimental |
+| Platform | Rust target | Execution environment / initial baseline |
+| --- | --- | --- |
+| Linux amd64 | `x86_64-unknown-linux-gnu` | Native Ubuntu 24.04 |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | Native Ubuntu 24.04 ARM64 |
+| Linux RISC-V | `riscv64gc-unknown-linux-gnu` | Pinned Debian 13 target userspace under QEMU |
+| Linux LoongArch64 | `loongarch64-unknown-linux-gnu` | Pinned Loong64 Debian target userspace under QEMU |
+| macOS Intel | `x86_64-apple-darwin` | Native macOS 15 |
+| macOS Apple Silicon | `aarch64-apple-darwin` | Native macOS 15 |
+| Windows amd64 | `x86_64-pc-windows-msvc` | Native Windows Server 2025 |
+| Windows arm64 | `aarch64-pc-windows-msvc` | Native Windows 11 ARM64 |
+| FreeBSD amd64 | `x86_64-unknown-freebsd` | FreeBSD 14.4 VM |
 
-Windows release artifacts use the MSVC target. A Windows GNU artifact is not
-part of the v0.0.1 scope. RISC-V remains experimental because its test coverage
-is limited to cross-build and QEMU smoke rather than the complete integration
-suite.
-
-The v0.0.1 Linux GNU archives are built on Ubuntu 24.04 and require a glibc-based
-system; Ubuntu 24.04 is the supported runtime baseline. Windows artifacts are
-validated on the GitHub Windows Server 2025 runner, and macOS artifacts on
-macOS 15. Older operating systems and other distributions are best effort for
-this first release.
+Acceptance reports record the actual OS and libc together with the exact source
+commit and compiler digest. These tested environments are the first supported
+baselines; older systems are not promised. Emulated Linux results validate the
+recorded target userspace on the runner's Linux kernel, not an older target kernel
+or native hardware performance. Windows builds use MSVC, not GNU. Required Windows
+SDK/MSVC runtime components must also be present. The nine reports and archives
+must all pass before publication; the source tree alone is not release evidence.
 
 ## Install
 
 Download the archive and `SHA256SUMS` for your platform from the
-[GitHub release](https://github.com/wavefnd/Vex/releases/tag/v0.0.1). Verify the
+[GitHub releases](https://github.com/wavefnd/Vex/releases). Verify the
 download before extracting it:
 
 ```sh
 sha256sum --check SHA256SUMS
-tar -xzf vex-v0.0.1-x86_64-unknown-linux-gnu.tar.gz
-install -m 0755 vex-v0.0.1-x86_64-unknown-linux-gnu/vex ~/.local/bin/vex
+tar -xzf vex-v0.0.2-beta-x86_64-unknown-linux-gnu.tar.gz
+install -m 0755 vex-v0.0.2-beta-x86_64-unknown-linux-gnu/vex ~/.local/bin/vex
 vex --version
 ```
 
@@ -74,7 +76,8 @@ install -m 0755 target/release/vex ~/.local/bin/vex
 
 Install `wavec` separately and make it available on `PATH`, or set
 `VEX_WAVEC` to its full path. `vex setup wavec --version <compatible-release>`
-downloads the official host archive, verifies SHA256SUMS and available GitHub
+downloads the official host archive, verifies SHA256SUMS or the official GitHub
+asset SHA-256 digest (both must agree when present), and available GitHub
 provenance, extracts a new versioned directory, checks the executable version and
 atomically switches a current-installation pointer. Previous installations remain
 available. Downloads require `curl` (`curl.exe` on Windows), and `gh` when
@@ -89,16 +92,43 @@ Compiler selection prefers `VEX_WAVEC`, then `PATH`, then the managed installati
 `wave-lang.dev` installer if artifact installation fails; it is never automatic.
 This fallback follows the external script's installation policy.
 
-Current source selects Wave's Windows x64/ARM64 **MSVC** ZIPs and Linux
-amd64/arm64/RISC-V/LoongArch64 and macOS Intel/Apple Silicon tarballs. It never
-falls back to a Windows GNU archive. This compiler asset selection does not add
-Vex release binaries for Windows ARM64 or LoongArch64. Windows SDK, MSVC/UCRT
-libraries and the Visual C++ runtime remain external prerequisites.
+Compiler installation covers all nine hosts in `platforms.json`, including
+FreeBSD amd64. It never falls back to another architecture or ABI. Set
+`VEX_WAVEC_ARCHIVE_SHA256` to require an independently pinned archive digest;
+CI pins all nine digests in `tools/wave-release.json`. Draft releases, changed
+pinned assets, missing integrity information and verification failures stop the
+installation before replacing the current compiler.
 
-Installing an artifact does not prove package-language compatibility. Official
-Wave `0.2.0-pre-beta` supports Hello World but not the canonical package imports
-required here. Required real-compiler CI remains deferred until a compatible
-official release is available.
+Required compiler CI uses the public `0.2.1-pre-beta` release. A missing or draft
+release blocks acceptance; neither nightly nor a development build substitutes
+for it. An exact project requirement can be declared as
+`compiler = "0.2.1-pre-beta"` in `vex.ws`. It compares the selected compiler's exact
+version before dependency/build mutation; no SemVer range compatibility is
+inferred. Dependencies may declare the same field; candidate dependency manifests
+are checked before checkout and lockfile publication. Format/schema and target
+capability checks remain independent.
+
+For a verified Vex install without a Rust build, use the reviewed installer from
+this source checkout (Python 3.11+ and GitHub CLI are required):
+
+```sh
+python3 tools/install.py --version 0.0.2-beta --prefix ~/.local
+# Upgrade an existing regular Vex executable explicitly:
+python3 tools/install.py --version 0.0.2-beta --prefix ~/.local --replace
+```
+
+The same installer runs with `python` on Windows. It verifies the official
+archive's checksum, provenance workflow and exact source commit, and binary
+version before atomically installing `bin/vex` or `bin/vex.exe`. It prints the
+installed path and removal instructions; it never changes shell configuration.
+
+Git dependencies containing submodules are rejected. Declare required packages
+as ordinary Git/path dependencies or publish a complete source tree. Git LFS and
+external checkout filters are not provisioned by Vex; source hosts must retain
+the exact locked objects and any externally managed file contents.
+
+See [the first-project guide](docs/first-project.md) for a complete library and
+application example.
 
 ## Commands
 
@@ -513,3 +543,6 @@ sha256sum --check SHA256SUMS
 
 See [the current roadmap](docs/roadmap.md) and [production hardening notes](docs/production-hardening.md)
 for implemented contracts, verification limits and remaining acceptance work.
+
+The complete [command and manifest reference](docs/reference.md) includes generated
+CLI help, field types, environment variables, streams, and machine-readable schemas.

@@ -7,6 +7,7 @@ use crate::{Dependency, DependencySource, Manifest};
 
 const ROOT_FIELDS: &[&str] = &[
     "format",
+    "compiler",
     "name",
     "version",
     "lib",
@@ -41,6 +42,16 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         None => false,
         _ => return Err("manifest field `lib` must be a bool".to_string()),
     };
+    let compiler = parse_optional_string(data.get("compiler"), "compiler")?;
+    if let Some(required) = &compiler {
+        let version = semver::Version::parse(required)
+            .map_err(|_| "manifest compiler must be an exact version such as 0.2.1-pre-beta; ranges are unsupported")?;
+        if !version.build.is_empty() || version.to_string() != *required {
+            return Err(
+                "manifest compiler must be a canonical exact version without build metadata".into(),
+            );
+        }
+    }
     let description = parse_optional_string(data.get("description"), "description")?;
     let author = parse_optional_string(data.get("author"), "author")?;
     let license = parse_optional_string(data.get("license"), "license")?;
@@ -57,6 +68,12 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
     }
 
     Ok(Manifest {
+        format: if matches!(data.get("format"), Some(WsonValue::Int(2))) {
+            2
+        } else {
+            1
+        },
+        compiler,
         name,
         version,
         lib,
@@ -418,5 +435,21 @@ mod tests {
         assert!(root_name.contains("dependency `app`"), "{root_name}");
         assert!(root_name.contains("../shadow-app"), "{root_name}");
         assert!(root_name.contains("root package name"), "{root_name}");
+    }
+}
+
+#[cfg(test)]
+mod format_contract_tests {
+    use super::*;
+    #[test]
+    fn format_and_exact_compiler_requirements_are_explicit() {
+        let parse = |text: &str| parse_manifest(text, PathBuf::from("vex.ws"));
+        assert_eq!(parse("{name=\"app\"}").unwrap().format, 1);
+        let manifest = parse("{format=2,name=\"app\",compiler=\"0.2.1-pre-beta\"}").unwrap();
+        assert_eq!(manifest.format, 2);
+        assert_eq!(manifest.compiler.as_deref(), Some("0.2.1-pre-beta"));
+        for value in ["^0.2.1", ">=0.2.1", "v0.2.1", "0.2.1+build.1", "", "0.02.1"] {
+            assert!(parse(&format!("{{name=\"app\",compiler=\"{value}\"}}")).is_err());
+        }
     }
 }

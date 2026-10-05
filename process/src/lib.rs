@@ -85,6 +85,14 @@ pub fn exit_code(status: ExitStatus) -> i32 {
 }
 
 pub fn output(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+    captured_output(command, Some(timeout))
+}
+
+pub fn output_without_deadline(command: &mut Command) -> Result<Output, String> {
+    captured_output(command, None)
+}
+
+fn captured_output(command: &mut Command, timeout: Option<Duration>) -> Result<Output, String> {
     install_handlers()?;
     command
         .stdin(Stdio::null())
@@ -118,7 +126,7 @@ pub fn output(command: &mut Command, timeout: Duration) -> Result<Output, String
     };
     let stdout = reader(Box::new(child.stdout.take().unwrap()), overflow.clone());
     let stderr = reader(Box::new(child.stderr.take().unwrap()), overflow.clone());
-    let status = wait(&mut child, &group, Some(timeout), &overflow);
+    let status = wait(&mut child, &group, timeout, &overflow);
     // Reap helpers still holding captured pipes even when their Git parent exited.
     group.terminate(true);
     let stdout = stdout
@@ -210,6 +218,10 @@ struct Group {
 #[cfg(unix)]
 fn spawn(command: &mut Command, interactive: bool) -> Result<(Child, Group), String> {
     use std::os::unix::process::CommandExt;
+    let program = std::path::Path::new(command.get_program());
+    if program.is_absolute() {
+        std::fs::metadata(program).map_err(|error| error.to_string())?;
+    }
     command.process_group(0);
     let foreground = if interactive {
         let previous = unsafe { libc::tcgetpgrp(0) };

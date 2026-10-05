@@ -43,10 +43,12 @@ def main():
     env["PATH"] = str(args.wavec_bin.resolve()) + os.pathsep + env.get("PATH", "")
     with tempfile.TemporaryDirectory(prefix="vex-wave-compat-") as temporary:
         root = Path(temporary)
-        version = run(["wavec", "--version"], root, env)
+        # Python's Windows executable search does not use a replacement env PATH.
+        # Probe this exact compiler; Vex itself still selects it through PATH.
+        version = run([str(compiler), "--version"], root, dict(env, NO_COLOR="1"))
         if args.expected_version and version.stdout.split()[:2] != ["wavec", args.expected_version]:
             raise RuntimeError("compiler version does not match the selected release")
-        capabilities = run(["wavec", "print", "supported-targets", "--format=json"], root, env)
+        capabilities = run([str(compiler), "print", "supported-targets", "--format=json"], root, env)
         targets = json.loads(capabilities.stdout)
         if not isinstance(targets, list) or not targets or not all(isinstance(t, str) and t for t in targets):
             raise RuntimeError("invalid supported-targets response")
@@ -75,6 +77,15 @@ def main():
         rejected = run([vex, "build", "--emit=obj"], app, env, succeeds=False)
         if "unknown Vex option" not in rejected.stderr:
             raise RuntimeError("raw compiler option was not rejected by Vex")
+
+        # The first-project guide consumes the unmodified generated library.
+        (app / "vex.ws").write_text(
+            '{format=2,name="app",compiler="0.2.1-pre-beta",dependencies=[{name="middle",path="../middle"}]}\n', encoding="utf-8")
+        (app / "src/main.wave").write_text('import("middle")::{greet};\nfun main() { greet(); }\n', encoding="utf-8")
+        run([vex, "fetch"], app, env)
+        generated = run([vex, "run", "--locked", "--offline"], app, env)
+        if "Hello from library" not in generated.stdout:
+            raise RuntimeError("generated library first-project example did not run")
 
         (leaf / "src/lib.wave").write_text(
             "pub fun value() -> i32 { return 42; }\nfun hidden() -> i32 { return 9; }\n",
@@ -112,6 +123,14 @@ def main():
                 raise RuntimeError("dependency graph did not produce 42")
             if (app / "vex.lock").read_bytes() != locked:
                 raise RuntimeError("locked/offline command changed vex.lock")
+        message_path = root / "run-events.jsonl"
+        result = run([vex, "--message-file", str(message_path), "run", "--locked", "--offline"], app, env)
+        events = [json.loads(line) for line in message_path.read_text().splitlines()]
+        artifacts = [event for event in events if event["event"] == "artifact"]
+        if len(artifacts) != 1 or not artifacts[0]["paths"] or not artifacts[0]["executable"]:
+            raise RuntimeError("run did not report its artifact and executable")
+        if events[-1]["origin"] != "program" or events[-1]["exit_code"] != 0:
+            raise RuntimeError("runtime outcome was not preserved")
         metadata = run([vex, "metadata", "--locked", "--offline"], nested, env)
         graph = json.loads(metadata.stdout)
         repeated = run([vex, "--manifest-path", str(app / "vex.ws"), "metadata"], root, env)
@@ -124,7 +143,14 @@ def main():
         if args.reexports:
             (middle / "src/lib.wave").write_text('pub import("leaf")::{hidden};\n', encoding="utf-8")
             (app / "src/main.wave").write_text('import("middle")::{hidden};\nfun main() { var result: i32 = hidden(); println("{}", result); }\n', encoding="utf-8")
-            rejected = run([vex, "check", "--locked", "--offline"], app, env, succeeds=False)
+            error_report = root / "compiler-errors.jsonl"
+            rejected = run([vex, "--message-file", str(error_report), "check", "--locked", "--offline"], app, env, succeeds=False)
+            errors = [json.loads(line) for line in error_report.read_text().splitlines()]
+            compiler_errors = [item['compiler'] for item in errors if item['event'] == 'compiler-diagnostic']
+            if not compiler_errors or not any('span' in json.dumps(item) and 'hidden' in json.dumps(item) for item in compiler_errors):
+                raise RuntimeError("compiler source diagnostic payload was lost")
+            if errors[-1]['origin'] != 'vex' or errors[-1]['exit_code'] != 4:
+                raise RuntimeError("compiler failure outcome was lost")
             if "hidden" not in rejected.stderr or "private" not in rejected.stderr:
                 raise RuntimeError("private import failed for an unexpected reason")
             if (app / "vex.lock").read_bytes() != locked:

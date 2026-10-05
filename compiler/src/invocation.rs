@@ -25,6 +25,7 @@ pub fn run_build_with_dry_run(
     runtime: &[OsString],
     user_requested_dry_run: bool,
     generation: Option<&Path>,
+    mut report: Option<&mut dyn FnMut(serde_json::Value) -> Result<(), Error>>,
 ) -> Result<Option<Execution>, Error> {
     let mut dry_run_args = args.to_vec();
     if !contains_dry_run_flag(&dry_run_args) {
@@ -32,7 +33,7 @@ pub fn run_build_with_dry_run(
     }
     insert_build_flag(&mut dry_run_args, "--error-format=json");
     let wavec = &compiler.path;
-    let validation_output = run_wavec_dry_run(wavec, &dry_run_args)?;
+    let validation_output = run_wavec_dry_run(wavec, &dry_run_args, &mut report)?;
     let mut plan = plan::validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr)
         .map_err(|error| Error::compiler(format!("installed wavec is incompatible with Vex: {error}\nhelp: update wavec or set VEX_WAVEC=/path/to/wavec")))?;
     if !validation_output.stderr.is_empty() {
@@ -110,22 +111,50 @@ pub fn run_build_with_dry_run(
         return Ok(None);
     }
     state::ensure_dir(Path::new("target")).map_err(Error::environment)?;
-    let compile_args: Vec<_> = args[..separator]
+    let mut compile_args: Vec<_> = args[..separator]
         .iter()
         .filter(|a| a.as_str() != "--run")
+        .cloned()
         .collect();
-    let status =
-        process::status(Command::new(wavec).args(compile_args), None, false).map_err(|e| {
+    let status = if let Some(sink) = report.as_mut() {
+        insert_build_flag(&mut compile_args, "--error-format=json");
+        let output = process::output_without_deadline(Command::new(wavec).args(&compile_args))
+            .map_err(Error::environment)?;
+        diagnostic::output::stdout(format_args!("{}", String::from_utf8_lossy(&output.stdout)))?;
+        // Compiler diagnostics retain their original structured payload and spans.
+        // User-program streams never pass through this compiler-only capture.
+        diagnostic::output::stderr(format_args!("{}", String::from_utf8_lossy(&output.stderr)))?;
+        emit_diagnostics(&output.stderr, &mut **sink)?;
+        output.status
+    } else {
+        process::status(Command::new(wavec).args(&compile_args), None, false).map_err(|e| {
             Error::environment(format!(
                 "failed to execute `{}` build: {e}",
                 wavec.display()
             ))
-        })?;
+        })?
+    };
     if !status.success() {
         return Err(compiler_error(
             status,
             format!("wavec build failed [{}]", classify_exit(status)),
         ));
+    }
+    if let Some(sink) = report.as_mut() {
+        let outputs: Vec<_> = if let Some(output) = plan["link"]["output"].as_str() {
+            vec![output.to_owned()]
+        } else {
+            plan["compile"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|job| job["output"].as_str().map(str::to_owned))
+                .collect()
+        };
+        sink(
+            serde_json::json!({"event":"artifact", "origin":"vex", "target":plan["target"],
+            "emit":plan["emit"], "paths":outputs, "executable":execution.as_ref().map(|(_,path)| path)}),
+        )?;
     }
     if let Some((execution, output)) = execution {
         state::reject_link(&output).map_err(Error::environment)?;
@@ -224,7 +253,30 @@ struct DryRunOutput {
     stderr: Vec<u8>,
 }
 
-fn run_wavec_dry_run(wavec: &Path, dry_run_args: &[String]) -> Result<DryRunOutput, Error> {
+fn emit_diagnostics(
+    stderr: &[u8],
+    sink: &mut dyn FnMut(serde_json::Value) -> Result<(), Error>,
+) -> Result<(), Error> {
+    for line in stderr
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(line) {
+            if payload.is_object() {
+                sink(
+                    serde_json::json!({"event":"compiler-diagnostic", "origin":"vex", "compiler":payload}),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_wavec_dry_run(
+    wavec: &Path,
+    dry_run_args: &[String],
+    report: &mut Option<&mut dyn FnMut(serde_json::Value) -> Result<(), Error>>,
+) -> Result<DryRunOutput, Error> {
     let output = process::output(
         Command::new(wavec).args(dry_run_args),
         std::time::Duration::from_secs(60),
@@ -235,6 +287,9 @@ fn run_wavec_dry_run(wavec: &Path, dry_run_args: &[String]) -> Result<DryRunOutp
             wavec.display()
         ))
     })?;
+    if let Some(sink) = report.as_mut() {
+        emit_diagnostics(&output.stderr, &mut **sink)?;
+    }
     if !output.status.success() {
         return Err(compiler_error(
             output.status,
@@ -260,5 +315,26 @@ fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
         (false, true) => stdout.trim().to_string(),
         (true, false) => stderr.trim().to_string(),
         (true, true) => "<no output>".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod message_tests {
+    #[test]
+    fn structured_diagnostic_preserves_nested_spans_and_related_locations() {
+        let payload = serde_json::json!({"error":{"message":"fixture", "span":{"start":3,"end":8,"line":2}, "related":[{"span":{"start":0,"end":1}}]}});
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let mut events = Vec::new();
+        super::emit_diagnostics(&bytes, &mut |event| {
+            events.push(event);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![
+                serde_json::json!({"event":"compiler-diagnostic", "origin":"vex", "compiler":payload})
+            ]
+        );
     }
 }
