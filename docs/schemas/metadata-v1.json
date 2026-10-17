@@ -93,6 +93,41 @@
               ]
             }
           }
+        },
+        "native": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "output": {
+              "enum": [
+                "object",
+                "shared",
+                null
+              ]
+            },
+            "exports": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "uniqueItems": true
+            },
+            "libraries": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "search_paths": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     }

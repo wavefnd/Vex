@@ -123,6 +123,26 @@ fn run_build(
     } else {
         None
     };
+    if let Some(native) = crate::native::prepare(
+        manifest,
+        &resolution,
+        compiler,
+        options.target.as_deref(),
+        options.release,
+        mode == BuildMode::Check,
+        generation.as_deref(),
+    )? {
+        // Native preparation supplies one canonical target and owns all output
+        // paths, including run-generation intermediates.
+        global_args.retain(|arg| arg != "--target");
+        if let Some(target) = &options.target {
+            global_args.retain(|arg| arg != target);
+        }
+        global_args.extend(native.global);
+        build_args.retain(|arg| !arg.starts_with("--target-dir="));
+        build_args.extend(native.inputs);
+        build_args.extend(native.output);
+    }
     let mut wavec_args = Vec::new();
     wavec_args.extend(resolution.dependency_args()?);
     wavec_args.extend(global_args);

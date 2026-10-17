@@ -11,6 +11,7 @@ const ROOT_FIELDS: &[&str] = &[
     "name",
     "version",
     "lib",
+    "native",
     "description",
     "author",
     "license",
@@ -43,6 +44,7 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         _ => return Err("manifest field `lib` must be a bool".to_string()),
     };
     let compiler = parse_optional_string(data.get("compiler"), "compiler")?;
+    let native = crate::native::parse(data.get("native"), lib)?;
     if let Some(required) = &compiler {
         let version = semver::Version::parse(required)
             .map_err(|_| "manifest compiler must be an exact version such as 0.2.1-pre-beta; ranges are unsupported")?;
@@ -77,6 +79,7 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         name,
         version,
         lib,
+        native,
         description,
         author,
         license,
@@ -191,7 +194,11 @@ fn parse_dependencies(value: Option<&WsonValue>) -> Result<Vec<Dependency>, Stri
     Ok(dependencies)
 }
 
-fn reject_unknown_fields(object: &WsonMap, accepted: &[&str], context: &str) -> Result<(), String> {
+pub(crate) fn reject_unknown_fields(
+    object: &WsonMap,
+    accepted: &[&str],
+    context: &str,
+) -> Result<(), String> {
     let Some(field) = object
         .keys()
         .find(|field| !accepted.contains(&field.as_str()))

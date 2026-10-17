@@ -524,7 +524,11 @@ fn inspect_project(
             compiler.validate_version(manifest.compiler.as_deref())?;
         }
         let mut args = resolution.dependency_args()?;
-        if let Some(target) = target {
+        let native =
+            crate::native::prepare(manifest, &resolution, compiler, target, false, false, None)?;
+        if let Some(native) = &native {
+            args.extend(native.global.clone());
+        } else if let Some(target) = target {
             args.extend(["--target".into(), target.into()]);
         }
         args.extend([
@@ -533,9 +537,13 @@ fn inspect_project(
             "--dry-run".into(),
             "--error-format=json".into(),
         ]);
+        if let Some(native) = native {
+            args.extend(native.inputs);
+            args.extend(native.output);
+        }
         let output = process::output(
             Command::new(compiler.path())
-                .args(args)
+                .args(&args)
                 .env("NO_COLOR", "1"),
             Duration::from_secs(60),
         )
@@ -552,7 +560,10 @@ fn inspect_project(
                 Error::compiler(message)
             });
         }
-        compiler::validate_plan(&output.stdout).map_err(Error::compiler)
+        let plan = compiler::validate_plan(&output.stdout).map_err(Error::compiler)?;
+        let root = std::env::current_dir().map_err(Error::environment)?;
+        compiler::validate_plan_outputs(&plan, &root, &args)?;
+        Ok(plan)
     })();
     match result {
         Ok(plan) => {
@@ -560,7 +571,7 @@ fn inspect_project(
                 "dry_run",
                 "ok",
                 true,
-                "compiler dry-run schema v1 is valid; compilation and linking were not executed",
+                "compiler dry-run schema v1 and output paths are valid; compilation and linking were not executed",
                 json!({"schema_version":plan["schema_version"], "target":plan["target"]}),
             );
             if let Some(program) = plan["link"]["program"].as_str() {

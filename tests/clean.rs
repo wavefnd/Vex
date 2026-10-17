@@ -134,23 +134,34 @@ fn removes_only_new_unchanged_outputs_and_dry_run_preserves_everything() {
 }
 
 #[test]
-fn modified_and_preexisting_outputs_are_never_adopted() {
+fn modified_and_preexisting_outputs_are_preserved_before_compilation() {
     let f = Fixture::new();
     fs::create_dir(f.root.join("target")).unwrap();
     fs::write(f.root.join("target/legacy.o"), "old compiler output").unwrap();
-    f.build("target/legacy.o", false);
+    let output = f
+        .command(&["build"])
+        .env("FAKE_BUILD_OUTPUT", "target/legacy.o")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(
+        fs::read(f.root.join("target/legacy.o")).unwrap(),
+        b"old compiler output"
+    );
     f.build("target/edited.o", false);
     fs::write(f.root.join("target/edited.o"), "user change").unwrap();
     f.ok(&["clean"]);
-    assert!(f.root.join("target/legacy.o").is_file());
+    let output = f
+        .command(&["build"])
+        .env("FAKE_BUILD_OUTPUT", "target/edited.o")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    f.ok(&["clean"]);
     assert_eq!(
         fs::read(f.root.join("target/edited.o")).unwrap(),
         b"user change"
     );
-    // Rebuilding a modified output does not retroactively reclaim ownership.
-    f.build("target/edited.o", false);
-    f.ok(&["clean"]);
-    assert!(f.root.join("target/edited.o").is_file());
 }
 
 #[test]

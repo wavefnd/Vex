@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
+mod native;
 mod parse;
 mod render;
 
+pub use native::{NativeConfig, NativeLibrary, NativeOutput, NativeSearchPath};
 pub use render::render_new_manifest;
 
 /// Parse a manifest without filesystem access or project-state mutation.
@@ -54,6 +56,7 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub lib: bool,
+    pub native: Option<NativeConfig>,
     pub description: Option<String>,
     pub author: Option<String>,
     pub license: Option<String>,

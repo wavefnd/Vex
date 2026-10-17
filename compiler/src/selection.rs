@@ -1,4 +1,5 @@
 use diagnostic::Error;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -8,6 +9,7 @@ pub struct Compiler {
     pub(crate) path: PathBuf,
     targets: Option<Vec<String>>,
     version: Option<String>,
+    specs: BTreeMap<Option<String>, serde_json::Value>,
 }
 
 impl Compiler {
@@ -62,6 +64,7 @@ impl Compiler {
             path,
             targets: None,
             version: None,
+            specs: BTreeMap::new(),
         })
     }
 
@@ -113,6 +116,53 @@ impl Compiler {
             )));
         }
         Ok(())
+    }
+
+    /// Target metadata is cached only for this invocation, just like the target list.
+    pub fn target_spec(&mut self, target: Option<&str>) -> Result<serde_json::Value, Error> {
+        let key = target.map(str::to_owned);
+        if let Some(value) = self.specs.get(&key) {
+            return Ok(value.clone());
+        }
+        let mut command = Command::new(&self.path);
+        command.args(["print", "target-spec", "--format=json"]);
+        if let Some(target) = target {
+            self.validate_target(target)?;
+            command.arg(format!("--target={target}"));
+        }
+        let output =
+            process::output(&mut command, Duration::from_secs(60)).map_err(Error::environment)?;
+        if !output.status.success() {
+            return Err(super::invocation::compiler_error(
+                output.status,
+                format!(
+                    "wavec target-spec query failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ));
+        }
+        let spec: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| Error::compiler(format!("invalid wavec target-spec JSON: {e}")))?;
+        let triple = spec["triple"]
+            .as_str()
+            .ok_or_else(|| Error::compiler("target-spec is missing triple"))?;
+        if triple.is_empty()
+            || !triple
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            || triple == "."
+            || triple == ".."
+            || target.is_some_and(|expected| expected != triple)
+            || spec["supported"] != true
+            || spec["object_format"].as_str().is_none()
+            || spec["os"].as_str().is_none()
+        {
+            return Err(Error::compiler(
+                "invalid or inconsistent compiler target-spec",
+            ));
+        }
+        self.specs.insert(key, spec.clone());
+        Ok(spec)
     }
 
     /// Query once per invocation; doctor uses the same validated capability data

@@ -71,11 +71,15 @@ def main():
         run(sys.executable, 'tests/wave_compatibility.py', '--vex', binary,
             '--wavec-bin', compiler.parent, '--reexports', '--expected-version', WAVE_VERSION,
             '--expected-sha256', compiler_hash, env=env)
+        run(sys.executable, 'tests/native_interop.py', '--vex', binary,
+            '--wavec-bin', compiler.parent, '--expected-version', WAVE_VERSION,
+            '--expected-sha256', compiler_hash, env=env)
     report = dict(schema_version=1, platform=target['id'], rust_target=target['rust_target'],
                   executor=target['executor'], source=run('git', 'rev-parse', 'HEAD', capture=True).stdout.strip(),
                   os=platform.platform(), libc=platform.libc_ver(), wave_version=WAVE_VERSION,
                   wave_release_id=release['id'], wave_asset_id=assets[0]['id'],
                   wave_archive_digest='sha256:'+WAVE_PIN['archives'][target['id']], compiler_sha256=compiler_hash,
+                  native_interop=['c', 'cpp-c-abi', 'rust-c-abi', 'wave-object', 'wave-shared'],
                   status='passed')
     (ROOT / 'dist' / f"acceptance-{target['id']}.json").write_text(json.dumps(report, indent=2)+'\n')
 

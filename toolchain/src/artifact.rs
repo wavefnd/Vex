@@ -665,7 +665,7 @@ fn extract(archive: &Path, root: &Path, zip: bool) -> Result<(), String> {
             if entry.is_symlink() {
                 return Err(error("archive symlinks are unsupported"));
             }
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(error)?.into_owned();
             let (directory, size, mode) =
                 (entry.is_dir(), entry.size(), entry.unix_mode().unwrap_or(0));
             write(&name, directory, size, &mut entry, mode)?;

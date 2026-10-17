@@ -89,6 +89,8 @@ pub fn run_build_with_dry_run(
     } else {
         None
     };
+    let root = std::env::current_dir().map_err(Error::environment)?;
+    let (outputs, optional_outputs) = validate_plan_outputs(&plan, &root, &args[..separator])?;
     if user_requested_dry_run {
         if !runtime.is_empty() {
             let values = runtime
@@ -116,16 +118,12 @@ pub fn run_build_with_dry_run(
         .filter(|a| a.as_str() != "--run")
         .cloned()
         .collect();
-    let outputs = plan["compile"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|job| job["output"].as_str())
-        .chain(plan["link"]["output"].as_str())
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    let root = std::env::current_dir().map_err(Error::environment)?;
-    let ownership = state::artifacts::Batch::prepare(&root, outputs).map_err(Error::environment)?;
+    let ownership = state::artifacts::Batch::prepare_with_optional(
+        &root,
+        outputs,
+        optional_outputs.iter().cloned(),
+    )
+    .map_err(Error::environment)?;
     let compile_result = (|| -> Result<ExitStatus, Error> {
         let status = if let Some(sink) = report.as_mut() {
             insert_build_flag(&mut compile_args, "--error-format=json");
@@ -153,16 +151,19 @@ pub fn run_build_with_dry_run(
         };
         Ok(status)
     })();
-    ownership.finish().map_err(Error::environment)?;
-    let status = compile_result?;
-    if !status.success() {
-        return Err(compiler_error(
-            status,
-            format!("wavec build failed [{}]", classify_exit(status)),
-        ));
-    }
+    let compile_result = compile_result.and_then(|status| {
+        if status.success() {
+            ownership.verify_outputs().map_err(Error::compiler)
+        } else {
+            Err(compiler_error(
+                status,
+                format!("wavec build failed [{}]", classify_exit(status)),
+            ))
+        }
+    });
+    finish_compilation(compile_result, ownership.finish())?;
     if let Some(sink) = report.as_mut() {
-        let outputs: Vec<_> = if let Some(output) = plan["link"]["output"].as_str() {
+        let mut outputs: Vec<_> = if let Some(output) = plan["link"]["output"].as_str() {
             vec![output.to_owned()]
         } else {
             plan["compile"]
@@ -172,6 +173,12 @@ pub fn run_build_with_dry_run(
                 .filter_map(|job| job["output"].as_str().map(str::to_owned))
                 .collect()
         };
+        outputs.extend(
+            optional_outputs
+                .iter()
+                .filter(|path| path.is_file())
+                .map(|path| path.to_string_lossy().into_owned()),
+        );
         sink(
             serde_json::json!({"event":"artifact", "origin":"vex", "target":plan["target"],
             "emit":plan["emit"], "paths":outputs, "executable":execution.as_ref().map(|(_,path)| path)}),
@@ -201,6 +208,163 @@ pub fn run_build_with_dry_run(
         return Ok(Some(execution));
     }
     Ok(None)
+}
+
+fn finish_compilation(
+    compilation: Result<(), Error>,
+    ownership: Result<(), String>,
+) -> Result<(), Error> {
+    match (compilation, ownership) {
+        (Err(primary), Err(secondary)) => {
+            // Bookkeeping must not replace compiler, message-file, or
+            // supervision failures. The secondary cause remains in JSONL too.
+            let _ = diagnostic::output::stderr(format_args!(
+                "warning: artifact ownership could not be recorded: {secondary}\n"
+            ));
+            Err(primary.with_field("artifact_ownership_error", secondary))
+        }
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(()), Err(error)) => Err(Error::environment(error)),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+pub(crate) fn validate_plan_outputs(
+    plan: &serde_json::Value,
+    root: &Path,
+    compiler_args: &[String],
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Error> {
+    let compile = plan["compile"].as_array().unwrap();
+    let outputs: Vec<_> = compile
+        .iter()
+        .filter_map(|job| job["output"].as_str())
+        .chain(plan["link"]["output"].as_str())
+        .map(PathBuf::from)
+        .collect();
+    let optional = optional_link_outputs(plan);
+    let all_outputs: Vec<_> = outputs.iter().chain(&optional).cloned().collect();
+    let names =
+        state::artifacts::validate_output_paths(root, &all_outputs).map_err(Error::compiler)?;
+    let identity = |path: &Path| {
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            root.join(path)
+        };
+        let path = path.canonicalize().unwrap_or_else(|_| {
+            let mut normalized = PathBuf::new();
+            for component in path.components() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        normalized.pop();
+                    }
+                    _ => normalized.push(component.as_os_str()),
+                }
+            }
+            normalized
+        });
+        let value = path.to_string_lossy().into_owned();
+        if cfg!(any(windows, target_os = "macos")) {
+            value.to_lowercase()
+        } else {
+            value
+        }
+    };
+    let output_ids: Vec<_> = names.iter().map(|name| identity(Path::new(name))).collect();
+    let compile_ids: Vec<_> = compile
+        .iter()
+        .map(|job| identity(Path::new(job["output"].as_str().unwrap())))
+        .collect();
+    let inputs = plan["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| input["path"].as_str().unwrap())
+        .chain(compile.iter().map(|job| job["input"].as_str().unwrap()));
+    for input in inputs {
+        if output_ids.contains(&identity(Path::new(input))) {
+            return Err(Error::compiler(format!(
+                "compiler output aliases input `{input}`"
+            )));
+        }
+    }
+    // Native absolute file arguments are generated by Vex, not accepted from
+    // the CLI. Schema v1 omits raw linker arguments from link.inputs, so protect
+    // them explicitly before any compile job could replace them.
+    for input in compiler_args
+        .iter()
+        .filter_map(|argument| argument.strip_prefix("-Clink-arg="))
+        .filter(|input| Path::new(input).is_absolute())
+    {
+        if output_ids.contains(&identity(Path::new(input))) {
+            return Err(Error::compiler(format!(
+                "compiler output aliases native linker input `{input}`"
+            )));
+        }
+    }
+    if let Some(inputs) = plan["link"]["inputs"].as_array() {
+        for input in inputs {
+            let input = input.as_str().unwrap();
+            let id = identity(Path::new(input));
+            // Objects generated in this same plan are intentionally link inputs.
+            if !compile_ids.contains(&id) && output_ids.contains(&id) {
+                return Err(Error::compiler(format!(
+                    "compiler output aliases link input `{input}`"
+                )));
+            }
+        }
+    }
+    Ok((outputs, optional))
+}
+
+fn optional_link_outputs(plan: &serde_json::Value) -> Vec<PathBuf> {
+    if !plan["target"].as_str().unwrap().ends_with("-windows-msvc") {
+        return Vec::new();
+    }
+    let Some(output) = plan["link"]["output"].as_str().map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let args = plan["link"]["args"].as_array().unwrap();
+    let mut paths = Vec::new();
+    // Schema v1 lists the image but omits MSVC linker companions. Reserve the
+    // compiler's documented destinations without parsing display-only commands.
+    for (option, default) in [
+        ("IMPLIB", output.with_extension("lib")),
+        ("PDB", output.with_extension("pdb")),
+        ("ILK", output.with_extension("ilk")),
+        ("MAP", output.with_extension("map")),
+        (
+            "MANIFESTFILE",
+            PathBuf::from(format!("{}.manifest", output.display())),
+        ),
+    ] {
+        let path = args
+            .iter()
+            .rev()
+            .find_map(|arg| {
+                let arg = arg.as_str().unwrap();
+                let (name, value) = arg
+                    .strip_prefix('/')
+                    .or_else(|| arg.strip_prefix('-'))?
+                    .split_once(':')?;
+                name.eq_ignore_ascii_case(option)
+                    .then(|| PathBuf::from(value))
+            })
+            .unwrap_or(default);
+        if option == "PDB"
+            && path
+                .to_str()
+                .is_some_and(|path| path.eq_ignore_ascii_case("NONE"))
+        {
+            continue;
+        }
+        if option == "IMPLIB" {
+            paths.push(path.with_extension("exp"));
+        }
+        paths.push(path);
+    }
+    paths
 }
 
 fn validate_output_path(output: &Path, generation: &Path) -> Result<(), Error> {
@@ -341,6 +505,54 @@ fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 #[cfg(test)]
 mod message_tests {
+    #[test]
+    fn tracking_failure_never_replaces_an_existing_error_category() {
+        for category in [
+            diagnostic::Category::Compiler,
+            diagnostic::Category::Environment,
+            diagnostic::Category::Timeout,
+            diagnostic::Category::Cancelled,
+        ] {
+            let error = super::finish_compilation(
+                Err(diagnostic::Error::new(category, "primary failure")),
+                Err("registry failure".into()),
+            )
+            .unwrap_err();
+            assert_eq!(error.category, category);
+            assert_eq!(error.to_string(), "primary failure");
+            assert_eq!(
+                error.context_fields,
+                vec![("artifact_ownership_error".into(), "registry failure".into())]
+            );
+        }
+    }
+
+    #[test]
+    fn native_linker_arguments_cannot_alias_compiler_outputs() {
+        let root = std::env::current_dir().unwrap();
+        let plan = serde_json::json!({
+            "target":"x86_64-unknown-linux-gnu", "link":null,
+            "compile":[{"input":"src/main.wave","output":"target/native-input-alias.o"}],
+            "inputs":[{"path":"src/main.wave"}]
+        });
+        let arguments = vec![format!(
+            "-Clink-arg={}",
+            root.join("target/native-input-alias.o").display()
+        )];
+        let error = super::validate_plan_outputs(&plan, &root, &arguments).unwrap_err();
+        assert_eq!(error.category, diagnostic::Category::Compiler);
+        assert!(error.to_string().contains("aliases native linker input"));
+        super::validate_plan_outputs(
+            &plan,
+            &root,
+            &[
+                "-Clink-arg=-soname".into(),
+                "-Clink-arg=libexample.so".into(),
+            ],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn structured_diagnostic_preserves_nested_spans_and_related_locations() {
         let payload = serde_json::json!({"error":{"message":"fixture", "span":{"start":3,"end":8,"line":2}, "related":[{"span":{"start":0,"end":1}}]}});

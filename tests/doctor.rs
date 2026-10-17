@@ -128,7 +128,8 @@ fn main() {
     assert!(!args.iter().any(|s| s == "--run"), "doctor must not run");
     if let Ok(error) = env::var("DOCTOR_ERROR") { eprintln!("{error}"); std::process::exit(env::var("DOCTOR_EXIT").ok().and_then(|s| s.parse().ok()).unwrap_or(1)); }
     let schema = env::var("DOCTOR_SCHEMA").unwrap_or_else(|_| "1".into());
-    let link = env::var("DOCTOR_LINK").map(|p| format!("{{\"output\":\"target/main\",\"inputs\":[],\"program\":{p:?},\"args\":[]}}")).unwrap_or_else(|_| "null".into());
+    let link_output = env::var("DOCTOR_LINK_OUTPUT").unwrap_or_else(|_| "target/main".into());
+    let link = env::var("DOCTOR_LINK").map(|p| format!("{{\"output\":{link_output:?},\"inputs\":[],\"program\":{p:?},\"args\":[]}}")).unwrap_or_else(|_| "null".into());
     println!("{{\"schema_version\":{schema},\"mode\":\"build\",\"target\":\"test-target\",\"emit\":\"bin\",\"emit_kinds\":[],\"control_mode\":null,\"forced_input_type\":null,\"inputs\":[],\"emit_jobs\":[],\"compile\":[],\"link\":{link},\"execute\":null}}");
 }
 "###).unwrap();
@@ -428,4 +429,34 @@ fn unknown_options_and_help_do_not_spawn_tools() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("usage: vex doctor"));
     assert!(f.calls().is_empty());
+}
+
+#[test]
+fn unsafe_compiler_outputs_fail_doctor_before_linker_checks_without_writes() {
+    for output in ["src/main.wave", "target/../src/main.wave"] {
+        let f = Fixture::new();
+        f.project(true);
+        let before = snapshot(&f.work);
+        let out = f
+            .command()
+            .env("DOCTOR_LINK", "missing-doctor-linker")
+            .env("DOCTOR_LINK_OUTPUT", output)
+            .args(["doctor", "--format=json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(4));
+        let report = document(&out);
+        assert_eq!(report["success"], false);
+        assert_eq!(check(&report, "dry_run")["status"], "error");
+        assert!(check(&report, "dry_run")["message"]
+            .as_str()
+            .unwrap()
+            .contains("strictly inside target"));
+        assert!(!report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "linker"));
+        assert_eq!(before, snapshot(&f.work));
+    }
 }

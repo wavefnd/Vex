@@ -567,3 +567,9 @@ for implemented contracts, verification limits and remaining acceptance work.
 
 The complete [command and manifest reference](docs/reference.md) includes generated
 CLI help, field types, environment variables, streams, and machine-readable schemas.
+
+### Native C ABI libraries
+
+Vex supports manifest-owned prebuilt native inputs and Wave object/shared outputs.
+See [native interoperability](docs/native-interop.md) for C, C++ and Rust C ABI
+contracts, target-specific paths, artifact ownership and runtime prerequisites.

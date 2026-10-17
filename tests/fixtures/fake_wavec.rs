@@ -57,6 +57,14 @@ fn main() {
         writeln!(log, "{}", args.join(" ")).unwrap();
     }
     if args.first().is_some_and(|s| s == "print") {
+        if args.get(1).is_some_and(|s| s == "target-spec") {
+            let target = args.iter().find_map(|a| a.strip_prefix("--target=")).unwrap_or("x86_64-unknown-linux-gnu");
+            let (os, format) = if target.contains("windows") { ("windows", "coff") }
+                else if target.contains("darwin") { ("macos", "macho") }
+                else { ("linux", "elf") };
+            println!("{{\"triple\":{target:?},\"os\":{os:?},\"object_format\":{format:?},\"hosted\":true,\"supported\":true}}");
+            return;
+        }
         assert_eq!(args, ["print", "supported-targets", "--format=json"]);
         println!("{}", env::var("FAKE_TARGETS").unwrap_or_else(|_| "[\"x86_64-unknown-linux-gnu\",\"aarch64-unknown-linux-gnu\"]".into()));
         return;

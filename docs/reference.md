@@ -19,6 +19,7 @@ Builds and user programs execute from the selected project root.
 | `compiler` | string | Absent means no version requirement; exact canonical wavec version, including prerelease, without build metadata |
 | `description`, `author`, `license` | string | Optional descriptive metadata |
 | `dependencies` | array of objects | Empty when absent |
+| `native` | object | Optional prebuilt library inputs, search paths and library output; see [native interoperability](native-interop.md) |
 
 A dependency requires a unique `name` and exactly one nonempty `path` or `git`
 string. Optional `version` is an exact package version assertion, not a range.
@@ -92,6 +93,9 @@ be removed, but directories containing unknown files are retained. Ownership
 begins with builds made by this version; existing files are never adopted merely
 because a later compiler invocation writes the same path. Run lease files remain
 as coordination identities, even after their generation is removed.
+Builds now refuse to overwrite these unknown or edited files; move them aside
+explicitly before rebuilding. A successful build verifies its declared outputs
+exist before reporting artifact events.
 
 `prune` previews unused Git checkouts; `--apply` performs deletion. A complete
 current local graph and existing project coordination are required; run `fetch`

@@ -275,63 +275,167 @@ fn try_lease(root: &Path, name: &str) -> Result<Option<File>, String> {
     }
 }
 
-/// Snapshots candidate outputs before compilation; preexisting unknown or
-/// edited outputs are never adopted, even if the compiler overwrites them.
+/// Check every declared destination before the compiler can write anything.
+/// This does not create state, and is also used for dry-run plans.
+pub fn validate_output_paths(root: &Path, outputs: &[PathBuf]) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut identities = BTreeSet::<String>::new();
+    for output in outputs {
+        let path = if output.is_absolute() {
+            output
+                .strip_prefix(root)
+                .map_err(|_| "compiler output is outside the project")?
+        } else {
+            output
+        };
+        let name = relative(path)?;
+        #[cfg(windows)]
+        for component in name.split('/') {
+            if component.ends_with(['.', ' ']) || component.contains(':') {
+                return Err(format!("ambiguous Windows compiler output `{name}`"));
+            }
+        }
+        let identity = if cfg!(any(windows, target_os = "macos")) {
+            name.to_lowercase()
+        } else {
+            name.clone()
+        };
+        if identities.iter().any(|previous| {
+            previous == &identity
+                || identity.starts_with(&format!("{previous}/"))
+                || previous.starts_with(&format!("{identity}/"))
+        }) {
+            return Err(format!("compiler output destinations overlap at `{name}`"));
+        }
+        checked(root, &name)?;
+        identities.insert(identity);
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn reject_hardlinked_output(path: &Path) -> Result<(), String> {
+    let file = match open_read(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    #[cfg(unix)]
+    let links = {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().map_err(|error| error.to_string())?.nlink()
+    };
+    #[cfg(windows)]
+    let links = {
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, info: *mut u32) -> i32;
+        }
+        // BY_HANDLE_FILE_INFORMATION is thirteen DWORDs; number of links is
+        // DWORD 10. The handle remains open throughout this query.
+        let mut info = [0u32; 13];
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        u64::from(info[10])
+    };
+    if links > 1 {
+        return Err(format!(
+            "refusing to overwrite hard-linked compiler output `{}`",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Reserve compiler destinations. Only absent files or unchanged, previously
+/// recorded artifacts may be replaced; user data must survive every build.
 pub struct Batch {
     root: PathBuf,
     registry: Registry,
     eligible: BTreeSet<String>,
+    required: BTreeSet<String>,
 }
 impl Batch {
     pub fn prepare(
         root: &Path,
         outputs: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self, String> {
+        Self::prepare_with_optional(root, outputs, [])
+    }
+
+    /// Linkers can produce optional companions that still need overwrite and
+    /// ownership protection, even when a particular build does not emit them.
+    pub fn prepare_with_optional(
+        root: &Path,
+        outputs: impl IntoIterator<Item = PathBuf>,
+        optional: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<Self, String> {
         let mut registry = read(root)?;
         let mut eligible = BTreeSet::new();
-        for output in outputs {
-            let path = if output.is_absolute() {
-                output
-                    .strip_prefix(root)
-                    .map_err(|_| "compiler output is outside the project")?
-            } else {
-                &output
-            };
-            // Other compiler-managed locations are outside clean's ownership.
-            let Ok(name) = relative(path) else { continue };
+        let mut outputs: Vec<_> = outputs.into_iter().collect();
+        let required = validate_output_paths(root, &outputs)?.into_iter().collect();
+        outputs.extend(optional);
+        for name in validate_output_paths(root, &outputs)? {
             if let Some(tail) = name.strip_prefix("target/.vex-run/") {
                 if !registry
                     .generations
                     .contains(tail.split('/').next().unwrap())
                 {
-                    continue;
+                    return Err("compiler output has no owned run generation".into());
                 }
             }
             let absolute = checked(root, &name)?;
             let current = fingerprint(&absolute)?;
             let owned = registry.files.get(&name);
-            if current.is_none() || current.as_ref() == owned {
-                eligible.insert(name);
-                for parent in path
-                    .ancestors()
-                    .skip(1)
-                    .take_while(|p| p.components().count() > 1)
-                {
-                    let name = relative(parent)?;
-                    if !root.join(parent).exists() {
-                        registry.directories.insert(name);
-                    }
-                }
-            } else {
-                registry.files.remove(&name);
+            if current.is_some() && current.as_ref() != owned {
+                return Err(format!(
+                    "refusing to overwrite unowned or modified compiler output `{name}`; move it before rebuilding"
+                ));
             }
+            reject_hardlinked_output(&absolute)?;
+            for parent in Path::new(&name)
+                .ancestors()
+                .skip(1)
+                .take_while(|p| p.components().count() > 1)
+            {
+                let name = relative(parent)?;
+                if !root.join(parent).exists() {
+                    registry.directories.insert(name);
+                }
+            }
+            eligible.insert(name);
         }
         Ok(Self {
             root: root.to_owned(),
             registry,
             eligible,
+            required,
         })
     }
+
+    /// A successful compiler must actually produce every promised artifact.
+    pub fn verify_outputs(&self) -> Result<(), String> {
+        for name in &self.eligible {
+            let path = checked(&self.root, name)?;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound && !self.required.contains(name) =>
+                {
+                    continue
+                }
+                Err(error) => return Err(format!("compiler did not produce `{name}`: {error}")),
+            };
+            if !metadata.is_file() {
+                return Err(format!("compiler output `{name}` is not a regular file"));
+            }
+            reject_hardlinked_output(&path)?;
+        }
+        Ok(())
+    }
+
     /// Record partial outputs too, so a failed compile can be cleaned safely.
     pub fn finish(mut self) -> Result<(), String> {
         for name in self.eligible {
