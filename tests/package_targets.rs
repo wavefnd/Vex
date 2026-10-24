@@ -1,4 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use serde_json::{json, Value};
+mod support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,14 +33,7 @@ fn compiler() -> &'static Path {
         } else {
             "target-wavec"
         });
-        let output = Command::new("rustc")
-            .args(["--edition=2021"])
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/target_wavec.rs"))
-            .arg("-o")
-            .arg(&compiler)
-            .output()
-            .unwrap();
-        code(&output, 0);
+        support::compile_fixture("target_wavec", &compiler);
         compiler
     })
 }
@@ -491,4 +489,54 @@ fn project_selection_errors_precede_missing_compiler() {
         assert!(f.build_calls().is_empty());
         assert!(!f.app.join(".vex").exists());
     }
+}
+
+#[test]
+fn only_active_dependency_compiler_requirements_gate_a_build() {
+    let f = Fixture::new("targets={bins=[{name=\"app\",path=\"src/main.wave\"}]}");
+    f.package("extra", "targets={lib={}},compiler=\"9.0.0\"");
+    fs::write(f.app.join("vex.ws"), "{format=4,name=\"app\",targets={bins=[{name=\"app\",path=\"src/main.wave\"}]},dependencies=[{name=\"extra\",path=\"../extra\",optional=true}]}").unwrap();
+    code(&f.run(&["fetch"]), 0);
+    let lock = fs::read(f.app.join("vex.lock")).unwrap();
+    code(&f.run(&["build", "--locked", "--offline"]), 0);
+    assert!(f
+        .build_calls()
+        .iter()
+        .all(|args| !args.iter().any(|arg| arg.starts_with("--dep=extra="))));
+    let calls = f.build_calls().len();
+    code(
+        &f.run(&["build", "--features=extra", "--locked", "--offline"]),
+        3,
+    );
+    assert_eq!(f.build_calls().len(), calls);
+    assert_eq!(fs::read(f.app.join("vex.lock")).unwrap(), lock);
+}
+
+#[test]
+fn every_selected_mode_is_validated_before_any_compiler_execution() {
+    let f = Fixture::new("targets={bins=[{name=\"app\",path=\"src/main.wave\"}]}");
+    f.package("extra", "targets={lib={}},compiler=\"9.0.0\"");
+    fs::write(f.app.join("vex.ws"), "{format=4,name=\"app\",targets={bins=[{name=\"host\",path=\"src/main.wave\",mode=\"hosted\"},{name=\"bare\",path=\"src/bin/admin.wave\",mode=\"freestanding\",startup=\"none\",entry=\"_start\"}]},dependencies=[{name=\"extra\",path=\"../extra\",target={mode=\"freestanding\"}}]}").unwrap();
+    code(
+        &f.run(&["fetch", "--target", "x86_64-unknown-linux-gnu"]),
+        0,
+    );
+    code(
+        &f.run(&[
+            "build",
+            "--bin",
+            "host",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+        ]),
+        0,
+    );
+    let calls = f.build_calls().len();
+    let lock = fs::read(f.app.join("vex.lock")).unwrap();
+    code(
+        &f.run(&["build", "--target", "x86_64-unknown-linux-gnu"]),
+        3,
+    );
+    assert_eq!(f.build_calls().len(), calls);
+    assert_eq!(fs::read(f.app.join("vex.lock")).unwrap(), lock);
 }

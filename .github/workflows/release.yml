@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: MPL-2.0
 name: Release
 
 on:
@@ -166,6 +170,7 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.commit }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Install Rust toolchain
         if: matrix.executor == 'native'
         run: |
@@ -187,13 +192,20 @@ jobs:
         with:
           image: tonistiigi/binfmt@sha256:465d3fdd28d0f2b871ba4b4ec98bd183292e96167f00d9fd40bd249f8632d705
           platforms: riscv64,loong64
+      - name: Install amd64 cross-build toolchain
+        if: matrix.executor == 'qemu'
+        run: |
+          rustup set default-host x86_64-unknown-linux-gnu
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+          rustup target add ${{ matrix.target }}
       - name: Complete emulated acceptance
         if: matrix.executor == 'qemu'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          docker run --rm --platform '${{ matrix.oci_platform }}' \
-            -v "$PWD:/work" -w /work '${{ matrix.image }}' \
-            sh tools/ci_guest.sh '${{ matrix.id }}'
+          python3 tools/ci_cross.py '${{ matrix.id }}'
       - name: Complete FreeBSD acceptance
         if: matrix.executor == 'vm'
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1

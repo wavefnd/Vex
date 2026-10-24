@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -16,23 +20,42 @@ const ROOT_FIELDS: &[&str] = &[
     "author",
     "license",
     "dependencies",
+    "test_dependencies",
     "targets",
     "default_run",
     "profiles",
     "build",
     "target_config",
+    "features",
+    "workspace",
 ];
-const DEPENDENCY_FIELDS: &[&str] = &["name", "version", "path", "git", "branch", "tag", "rev"];
+const DEPENDENCY_FIELDS: &[&str] = &[
+    "name",
+    "version",
+    "path",
+    "git",
+    "branch",
+    "tag",
+    "rev",
+    "subdir",
+    "package",
+    "version_req",
+    "target",
+    "optional",
+    "features",
+    "default_features",
+];
 
 pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest, String> {
-    let data = loads_versions(raw, "format", &[2, 3])
+    let data = loads_versions(raw, "format", &[2, 3, 4])
         .map_err(|e| format!("failed to parse manifest: {e}"))?;
     reject_unknown_fields(&data, ROOT_FIELDS, "manifest")?;
     let format = match data.get("format") {
         None | Some(WsonValue::Int(1)) => 1,
         Some(WsonValue::Int(2)) => 2,
         Some(WsonValue::Int(3)) => 3,
-        _ => return Err("unsupported manifest format; expected 1 (legacy), 2 (escaped strings), or 3 (explicit targets)".into()),
+        Some(WsonValue::Int(4)) => 4,
+        _ => return Err("unsupported manifest format; expected 1 (legacy), 2 (escaped strings), 3 (explicit targets), or 4 (package graphs)".into()),
     };
     if format < 3 {
         for field in [
@@ -51,7 +74,7 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
             "format 3 declares its library in `targets.lib`; root `lib` is not supported".into(),
         );
     }
-    if format == 3 {
+    if format >= 3 {
         if let Some(WsonValue::Object(native)) = data.get("native") {
             if native.contains_key("output") || native.contains_key("exports") {
                 return Err(
@@ -62,8 +85,29 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         }
     }
 
+    let workspace = crate::workspace::parse(data.get("workspace"), format)?;
+    let virtual_workspace = workspace.is_some() && !data.contains_key("name");
+    if virtual_workspace
+        && [
+            "targets",
+            "native",
+            "version",
+            "dependencies",
+            "test_dependencies",
+            "features",
+            "default_run",
+        ]
+        .iter()
+        .any(|field| data.contains_key(*field))
+    {
+        return Err(
+            "virtual workspaces cannot declare package-only fields; add a name for a root package"
+                .into(),
+        );
+    }
     let name = match data.get("name") {
         Some(WsonValue::String(value)) => restore_url_separators(value),
+        None if virtual_workspace => "workspace".into(),
         _ => return Err("manifest field `name` must be a string".to_string()),
     };
     crate::validate_package_name(&name)?;
@@ -72,6 +116,13 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
             .ok_or_else(|| "manifest field `version` must be a version or string".to_string())?,
         None => "0.1.0".to_string(),
     };
+    if format >= 4 {
+        let parsed = semver::Version::parse(&version)
+            .map_err(|e| format!("format 4 package version must be SemVer: {e}"))?;
+        if parsed.to_string() != version {
+            return Err("package version must be canonical SemVer".into());
+        }
+    }
     let lib = match data.get("lib") {
         Some(WsonValue::Bool(value)) => *value,
         None => false,
@@ -79,8 +130,30 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
     };
     let compiler = parse_optional_string(data.get("compiler"), "compiler")?;
     let native = crate::native::parse(data.get("native"), lib)?;
-    let model = if format == 3 {
-        crate::model::parse(&data, &name)?
+    let model = if format >= 3 {
+        if virtual_workspace {
+            let mut settings = data.clone();
+            settings.insert(
+                "targets".into(),
+                wson::loads_versions(
+                    "{format=4,targets={bins=[{name=\"workspace\",path=\"src/main.wave\"}]}}",
+                    "format",
+                    &[4],
+                )?
+                .remove("targets")
+                .unwrap(),
+            );
+            let mut model = crate::model::parse(&settings, &name)?;
+            if model.target_config.iter().any(|c| !c.bins.is_empty()) {
+                return Err(
+                    "virtual workspace target_config cannot override package binaries".into(),
+                );
+            }
+            model.targets.clear();
+            model
+        } else {
+            crate::model::parse(&data, &name)?
+        }
     } else {
         crate::model::legacy(&name, lib, native.as_ref())
     };
@@ -100,7 +173,44 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
     let description = parse_optional_string(data.get("description"), "description")?;
     let author = parse_optional_string(data.get("author"), "author")?;
     let license = parse_optional_string(data.get("license"), "license")?;
-    let dependencies = parse_dependencies(data.get("dependencies"))?;
+    let mut dependencies = parse_dependencies(data.get("dependencies"), format)?;
+    if data.contains_key("test_dependencies") && format < 4 {
+        return Err("test_dependencies require format = 4".into());
+    }
+    let mut test_dependencies = parse_dependencies(data.get("test_dependencies"), format)?;
+    for dependency in &mut test_dependencies {
+        dependency.test_only = true;
+    }
+    for dependency in &test_dependencies {
+        if dependencies
+            .iter()
+            .any(|normal| normal.name == dependency.name)
+        {
+            return Err(format!(
+                "test dependency alias `{}` duplicates a normal dependency",
+                dependency.name
+            ));
+        }
+    }
+    dependencies.extend(test_dependencies);
+    let tests = crate::model::parse_tests(&data, &name)?;
+    if !tests.is_empty() && format < 4 {
+        return Err("test targets require format = 4".into());
+    }
+
+    let features = match data.get("features") {
+        Some(value) if format >= 4 => serde_json::from_value(wson::json_value(value)?)
+            .map_err(|e| format!("invalid package features: {e}"))?,
+        Some(_) => return Err("package features require format = 4".into()),
+        None => source::graph::Features::new(),
+    };
+    source::graph::validate(
+        &features,
+        &dependencies
+            .iter()
+            .map(|d| d.edge(d.name.clone()))
+            .collect::<Vec<_>>(),
+    )?;
 
     if let Some(dependency) = dependencies
         .iter()
@@ -113,6 +223,11 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
     }
 
     Ok(Manifest {
+        tests,
+        workspace,
+        virtual_workspace,
+        scope: None,
+        fields: data.keys().cloned().collect(),
         format,
         compiler,
         name,
@@ -128,6 +243,7 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         author,
         license,
         dependencies,
+        features,
         source_path,
     })
 }
@@ -140,7 +256,7 @@ fn parse_optional_string(value: Option<&WsonValue>, field: &str) -> Result<Optio
     }
 }
 
-fn parse_dependencies(value: Option<&WsonValue>) -> Result<Vec<Dependency>, String> {
+fn parse_dependencies(value: Option<&WsonValue>, format: u32) -> Result<Vec<Dependency>, String> {
     let mut dependencies = Vec::new();
     let mut names = HashSet::new();
     let Some(WsonValue::Array(items)) = value else {
@@ -157,10 +273,60 @@ fn parse_dependencies(value: Option<&WsonValue>) -> Result<Vec<Dependency>, Stri
         let name = required_string(object.get("name"), "dependency field `name`")?;
         validate_dependency_name(&name)?;
         reject_unknown_fields(object, DEPENDENCY_FIELDS, &format!("dependency `{name}`"))?;
-        if !names.insert(name.clone()) {
+        let target = object
+            .get("target")
+            .map(|value| {
+                serde_json::from_value::<source::graph::Predicate>(wson::json_value(value)?)
+                    .map_err(|e| format!("invalid dependency target: {e}"))
+            })
+            .transpose()?;
+        if let Some(target) = &target {
+            target.validate()?;
+        }
+        let optional = graph_bool(object, "optional", false)?;
+        let default_features = graph_bool(object, "default_features", true)?;
+        let features = object
+            .get("features")
+            .map(|value| {
+                serde_json::from_value::<Vec<String>>(wson::json_value(value)?)
+                    .map_err(|e| format!("invalid dependency features: {e}"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if format < 4
+            && ["target", "optional", "features", "default_features"]
+                .iter()
+                .any(|key| object.contains_key(*key))
+        {
+            return Err("dependency activation requires format = 4".into());
+        }
+        let declaration = if format >= 4 {
+            format!("{name}:{target:?}")
+        } else {
+            name.clone()
+        };
+        if !names.insert(declaration) {
             return Err(format!("dependency `{name}` is declared more than once"));
         }
 
+        let package = optional_string(object.get("package"), "dependency field `package`")?;
+        let version_req =
+            optional_string(object.get("version_req"), "dependency field `version_req`")?;
+        if package.is_some() || version_req.is_some() {
+            if format < 4 {
+                return Err("package aliases and version_req require format = 4".into());
+            }
+            if let Some(package) = &package {
+                crate::validate_package_name(package)?;
+            }
+            if let Some(required) = &version_req {
+                if object.contains_key("version") {
+                    return Err("dependency must not combine version and version_req".into());
+                }
+                semver::VersionReq::parse(required)
+                    .map_err(|e| format!("invalid version_req for `{name}`: {e}"))?;
+            }
+        }
         let path = optional_string(object.get("path"), "dependency field `path`")?;
         let git = optional_string(object.get("git"), "dependency field `git`")?;
         let branch = optional_string(object.get("branch"), "dependency field `branch`")?;
@@ -178,6 +344,16 @@ fn parse_dependencies(value: Option<&WsonValue>) -> Result<Vec<Dependency>, Stri
                     "dependency `{name}` field `{field}` must not be empty or whitespace-only"
                 ));
             }
+        }
+        let subdir = optional_string(object.get("subdir"), "dependency field `subdir`")?;
+        if let Some(value) = &subdir {
+            if format < 4 {
+                return Err("dependency subdir requires format = 4".into());
+            }
+            if git.is_none() {
+                return Err("subdir applies only to Git dependencies".into());
+            }
+            source::validate_subdir(value)?;
         }
         let version = match object.get("version") {
             Some(value) => Some(parse_version_string(value).ok_or_else(|| {
@@ -230,12 +406,30 @@ fn parse_dependencies(value: Option<&WsonValue>) -> Result<Vec<Dependency>, Stri
             }
         };
         dependencies.push(Dependency {
+            test_only: false,
+            binding_alias: None,
+            target,
+            optional,
+            features,
+            default_features,
+            package,
+            version_req,
+            modern: format >= 4,
+            subdir,
             name,
             version,
             source,
         });
     }
     Ok(dependencies)
+}
+
+fn graph_bool(object: &WsonMap, field: &str, default: bool) -> Result<bool, String> {
+    match object.get(field) {
+        None => Ok(default),
+        Some(WsonValue::Bool(value)) => Ok(*value),
+        _ => Err(format!("dependency field `{field}` must be a bool")),
+    }
 }
 
 pub(crate) fn reject_unknown_fields(

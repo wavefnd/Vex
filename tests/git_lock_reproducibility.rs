@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -107,11 +111,8 @@ fn git_lock_keeps_transitive_graph_until_explicit_update() {
         app.join(".vex/deps/pkg_9f91161f43433e49a6de6db680d79f60159f2e4ac9172621a12846428158440b"),
     )
     .expect("managed leaf checkout must be removed for the offline test");
-    let missing_offline = vex(&app, &["fetch", "--locked", "--offline"]);
-    assert_failure(&missing_offline, "offline fetch with a missing checkout");
-    let missing_offline_stderr = String::from_utf8_lossy(&missing_offline.stderr);
-    assert!(missing_offline_stderr.contains("not available locally in offline mode"));
-    assert!(missing_offline_stderr.contains("run `vex fetch` while online"));
+    let restored_offline = vex(&app, &["fetch", "--locked", "--offline"]);
+    assert_success(&restored_offline, "offline restoration from shared cache");
     assert_eq!(read_lock(&app), first_lock);
 
     let restored = vex(&app, &["fetch", "--locked"]);
@@ -717,6 +718,7 @@ fn vex(path: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vex"))
         .args(args)
         .current_dir(path)
+        .env("VEX_CACHE_HOME", path.join(".test-cache"))
         .output()
         .expect("vex command must start")
 }
@@ -1288,6 +1290,16 @@ fn unadvertised_locked_object_is_fetched_exactly_and_pruned_object_never_substit
     fs::remove_dir_all(app.join(".vex/deps")).unwrap();
     git(&["reflog", "expire", "--expire=now", "--all"]);
     git(&["gc", "--prune=now"]);
+    // Cached locked objects remain usable after the source prunes its history.
+    assert_success(
+        &vex(&app, &["fetch", "--locked", "--offline"]),
+        "retained cached object",
+    );
+    fs::remove_dir_all(app.join(".vex/deps")).unwrap();
+    assert_success(
+        &vex(&app, &["cache", "prune", "--apply"]),
+        "explicit cache cleanup",
+    );
     let output = vex(&app, &["fetch", "--locked"]);
     assert_eq!(output.status.code(), Some(3));
     let error = String::from_utf8_lossy(&output.stderr);
@@ -1344,15 +1356,7 @@ fn fixture_compiler(root: &Path) -> PathBuf {
     let source = root.join("fake.rs");
     let binary = root.join(if cfg!(windows) { "wavec.exe" } else { "wavec" });
     fs::write(&source, include_str!("fixtures/fake_wavec.rs")).unwrap();
-    assert_success(
-        &Command::new("rustc")
-            .arg(&source)
-            .arg("-o")
-            .arg(&binary)
-            .output()
-            .unwrap(),
-        "compile fixture",
-    );
+    support::compile_fixture("fake_wavec", &binary);
     binary
 }
 

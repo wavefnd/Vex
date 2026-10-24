@@ -1,8 +1,8 @@
-use diagnostic::Error;
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
+use diagnostic::Error;
 
 use std::collections::BTreeMap;
 
@@ -32,19 +32,22 @@ pub fn tree(args: &[String], selection: &crate::project::Selection) -> Result<()
     }
     let options = parse_options(args).map_err(Error::usage)?;
     let _project = selection.enter()?;
-    run_tree(options)
+    run_tree(options, selection.graph.clone(), _project.primary())
 }
 
-fn run_tree(options: TreeOptions) -> Result<(), Error> {
-    let manifest = Manifest::load()?;
-    let root_dependencies = manifest
-        .dependencies
-        .iter()
-        .map(|dependency| dependency.name.clone())
-        .collect::<Vec<_>>();
+fn run_tree(
+    options: TreeOptions,
+    graph: source::graph::Selection,
+    manifest: Manifest,
+) -> Result<(), Error> {
     let resolution = resolve(
         &manifest,
         ResolveOptions {
+            requests: Vec::new(),
+            update_bindings: None,
+            force_bindings: false,
+            additional_contexts: Vec::new(),
+            selection: graph,
             dry_run: false,
             update: UpdatePolicy::ReuseLocked,
             locked: options.locked,
@@ -52,18 +55,46 @@ fn run_tree(options: TreeOptions) -> Result<(), Error> {
         },
         ui::status,
     )?;
-    diagnostic::out!(
-        "{}",
-        render_tree(
-            &manifest.name,
-            &manifest.version,
-            &root_dependencies,
-            resolution.packages(),
-            options.invert.as_deref(),
-            options.depth,
-        )
-        .map_err(Error::resolution)?
-    );
+    let mut found = options.invert.is_none();
+    for view in resolution.views() {
+        let invert = if let Some(requested) = options.invert.as_deref() {
+            let matching: Vec<_> = view
+                .packages
+                .iter()
+                .filter(|p| {
+                    p.name == requested
+                        || p.import_name() == requested
+                        || p.id.as_deref() == Some(requested)
+                })
+                .collect();
+            match matching.as_slice() {
+                [package] => { found = true; Some(package.name.as_str()) },
+                [] if requested == view.root.name => { found = true; Some(requested) },
+                [] => continue,
+                _ => return Err(Error::resolution("inverse query matches multiple bindings; select a binding key from metadata schema 2")),
+            }
+        } else {
+            None
+        };
+        diagnostic::out!(
+            "{}",
+            render_tree(
+                &view.root.name,
+                &view.root.version,
+                &view.dependencies,
+                &view.packages,
+                invert,
+                options.depth
+            )
+            .map_err(Error::resolution)?
+        );
+    }
+    if !found {
+        return Err(Error::resolution(format!(
+            "package `{}` is not present in the selected dependency graph",
+            options.invert.as_deref().unwrap()
+        )));
+    }
     Ok(())
 }
 
@@ -245,9 +276,14 @@ impl TreeRenderer<'_> {
 }
 
 fn package_label(package: &LockedPackage) -> String {
+    let name = if package.import_name() != package.package_name() {
+        format!("{} => {}", package.import_name(), package.package_name())
+    } else {
+        package.import_name().to_owned()
+    };
     match &package.source {
         LockedSource::Path { requested, .. } => {
-            format!("{} v{} (path {requested})", package.name, package.version)
+            format!("{} v{} (path {requested})", name, package.version)
         }
         LockedSource::Git {
             url,
@@ -264,9 +300,14 @@ fn package_label(package: &LockedPackage) -> String {
                 .or_else(|| rev.as_ref().map(|value| format!(" rev {value}")))
                 .unwrap_or_default();
             let short_commit = &commit[..commit.len().min(7)];
+            let subdir = package
+                .subdir
+                .as_ref()
+                .map(|p| format!(" subdir {p}"))
+                .unwrap_or_default();
             format!(
-                "{} v{} (git {}{reference} @ {short_commit})",
-                package.name,
+                "{} v{} (git {}{reference}{subdir} @ {short_commit})",
+                name,
                 package.version,
                 source::identity(url)
             )
@@ -282,6 +323,12 @@ mod tests {
 
     fn path_package(name: &str, version: &str, dependencies: &[&str]) -> LockedPackage {
         LockedPackage {
+            package: None,
+            id: None,
+            import_name: None,
+            edges: Vec::new(),
+            features: Default::default(),
+            subdir: None,
             name: name.to_string(),
             version: version.to_string(),
             source: LockedSource::Path {
@@ -299,6 +346,12 @@ mod tests {
     fn renders_sources_commits_and_shared_dependencies() {
         let packages = vec![
             LockedPackage {
+                package: None,
+                id: None,
+                import_name: None,
+                edges: Vec::new(),
+                features: Default::default(),
+                subdir: None,
                 name: "alpha".to_string(),
                 version: "1.0.0".to_string(),
                 source: LockedSource::Git {

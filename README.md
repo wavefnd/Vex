@@ -594,3 +594,49 @@ CLI help, field types, environment variables, streams, and machine-readable sche
 Vex supports manifest-owned prebuilt native inputs and Wave object/shared outputs.
 See [native interoperability](docs/native-interop.md) for C, C++ and Rust C ABI
 contracts, target-specific paths, artifact ownership and runtime prerequisites.
+
+Format 4 projects can share a lockfile and output directory using explicit
+[workspaces](docs/workspaces.md), selected with `-p <package>` or `--workspace`.
+
+Create a separate format 4 project with `vex new app`; invalid inferred names are
+rejected, so use `vex new my-app --name my_app` explicitly. Git initialization is
+opt-in with `--git`. Existing destinations, including empty directories, remain
+untouched. An interrupted scaffold keeps its recovery journal in the new project.
+
+```sh
+vex add utility --path ../utility --offline
+vex add utility --git https://example.org/utility.git --tag v1.0.0
+vex add short_name --git https://example.org/utility.git --package-name utility --version-req '^1'
+vex remove utility --offline
+```
+
+`add`/`remove` change direct dependencies only and preserve unrelated comments and
+formatting. A durable journal coordinates `vex.ws` and the root `vex.lock`;
+failed resolution restores both. A normal `fetch` recovers interrupted edits,
+while dry-run and metadata report pending recovery without modifying files.
+Use `-p <member>` when editing a workspace. Legacy string meaning is preserved;
+values that cannot be represented safely require explicit manifest migration.
+
+The installed binary includes CLI tooling generators, keeping release archives'
+existing layout: `vex completions bash|zsh|fish|powershell` and `vex manpage` print
+installable scripts and the `vex(1)` manual. No compiler or network is queried.
+The checked-in [command reference](docs/commands.md), `docs/completions/`, and
+`docs/vex.1` are generated from `tools/command-spec.json`; CI verifies drift.
+
+Format 4 supports explicit executable tests, each with a normal Wave `main`:
+
+```wson
+ targets = { lib = {}, tests = [{ name = "smoke", path = "tests/smoke.wave" }] },
+ test_dependencies = [{ name = "fixtures", path = "../fixtures" }]
+```
+
+`vex test [name-substring] [--locked] [--offline] [-- <args...>]` compiles all
+selected tests before running them in package/name order. Every selected test
+runs; the first failed program's exit code is returned unchanged. Test results
+appear as `test_result` events in `--message-file` JSONL; program stdio is inherited.
+No test result is cached. Compilation failures stop the batch. Cross targets
+require a compiler-supported runner and otherwise fail before execution.
+Test dependencies are fetched into the union lock, selected only for a root test
+invocation, and never propagated as a dependency's ordinary imports. Query them
+with `tree` or `metadata --include-tests --format-version 2`.
+Wave's compiler-native unit-test harness remains unsupported until Wave adds it.

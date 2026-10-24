@@ -1,13 +1,15 @@
 #!/bin/sh
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # SPDX-License-Identifier: MPL-2.0
 set -eu
 export CARGO_BUILD_JOBS=2
 export RUST_TEST_THREADS=2
 case "$(uname -s)" in
   Linux)
-    vex_guest_python=python3
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git python3 build-essential pkg-config gh procps
+    echo 'QEMU Linux acceptance uses tools/ci_cross.py on amd64' >&2
+    exit 2
     ;;
   FreeBSD)
     vex_guest_python=python3.11

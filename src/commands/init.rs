@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use diagnostic::Error;
 use std::env;
 use std::fs;
@@ -51,7 +55,14 @@ fn run_init(is_lib: bool) -> Result<(), Error> {
     };
     let mut files = vec![
         (source_name.as_str(), source_template.to_string()),
-        ("vex.lock", lockfile::encode(Lockfile::empty())),
+        (
+            "vex.lock",
+            lockfile::encode(Lockfile {
+                version: 3,
+                packages: Vec::new(),
+                roots: Vec::new(),
+            }),
+        ),
     ];
     let created_ignore = fs::symlink_metadata(Path::new(".gitignore")).is_err();
     if created_ignore {

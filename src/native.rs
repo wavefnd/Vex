@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 //! Manifest-owned native linking. Foreign sources and build scripts are never executed.
 use compiler::Compiler;
 use diagnostic::Error;
@@ -120,21 +124,28 @@ fn named_library(
 /// Dependent libraries precede their dependencies, including diamonds. Preserve
 /// declaration order within a package because static archive order is significant.
 fn manifests(root: &Manifest, resolution: &Resolution) -> Result<Vec<Manifest>, Error> {
-    let mut values = BTreeMap::from([(root.name.clone(), root.clone())]);
+    let mut values = BTreeMap::from([(
+        root.name.clone(),
+        (
+            root.clone(),
+            resolution.root_dependencies().to_vec(),
+            format!("root:{}", root.source_path.display()),
+        ),
+    )]);
     for package in resolution.packages() {
-        let directory = match &package.source {
-            lockfile::LockedSource::Git { resolved, .. }
-            | lockfile::LockedSource::Path { resolved, .. } => resolved,
-        };
         values.insert(
             package.name.clone(),
-            Manifest::load_from(directory.join(manifest::MANIFEST_FILE))?,
+            (
+                Manifest::load_from(package.directory().join(manifest::MANIFEST_FILE))?,
+                package.dependencies.clone(),
+                package.id.clone().unwrap_or_else(|| package.name.clone()),
+            ),
         );
     }
     let mut incoming: BTreeMap<_, usize> = values.keys().map(|name| (name.clone(), 0)).collect();
-    for manifest in values.values() {
-        for dependency in &manifest.dependencies {
-            *incoming.get_mut(&dependency.name).ok_or_else(|| {
+    for (_, dependencies, _) in values.values() {
+        for dependency in dependencies {
+            *incoming.get_mut(dependency).ok_or_else(|| {
                 Error::resolution("incomplete native dependency graph; run vex fetch")
             })? += 1;
         }
@@ -145,16 +156,19 @@ fn manifests(root: &Manifest, resolution: &Resolution) -> Result<Vec<Manifest>, 
         .map(|(name, _)| name.clone())
         .collect();
     let mut result = Vec::new();
+    let mut seen = BTreeSet::new();
     while let Some(name) = ready.pop_first() {
-        let manifest = values.remove(&name).unwrap();
-        for dependency in &manifest.dependencies {
-            let count = incoming.get_mut(&dependency.name).unwrap();
+        let (manifest, dependencies, identity) = values.remove(&name).unwrap();
+        for dependency in dependencies {
+            let count = incoming.get_mut(&dependency).unwrap();
             *count -= 1;
             if *count == 0 {
-                ready.insert(dependency.name.clone());
+                ready.insert(dependency);
             }
         }
-        result.push(manifest);
+        if seen.insert(identity) {
+            result.push(manifest);
+        }
     }
     if !values.is_empty() {
         return Err(Error::resolution("cycle in native dependency graph"));
@@ -395,6 +409,11 @@ fn prepare_settings(
         .unwrap_or_else(|| PathBuf::from("target"))
         .join(triple)
         .join(profile);
+    let directory = if root.scope.is_some() {
+        directory.join("packages").join(&root.name)
+    } else {
+        directory
+    };
     let output_directory = directory.join(if target.kind == TargetKind::Library {
         "lib"
     } else {
@@ -835,7 +854,8 @@ mod tests {
                 .category,
             diagnostic::Category::Environment
         );
-        assert!(Path::new(&linker_path(&root, "rustc").unwrap()).is_absolute());
+        // Git is available in target execution guests as well as build hosts.
+        assert!(Path::new(&linker_path(&root, "git").unwrap()).is_absolute());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

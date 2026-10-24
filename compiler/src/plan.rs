@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use serde_json::Value;
 
 pub(crate) fn validate_dry_run_json_output(stdout: &[u8], _stderr: &[u8]) -> Result<Value, String> {

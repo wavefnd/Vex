@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # SPDX-License-Identifier: MPL-2.0
 """Enforce reviewable workflow pins, platform coverage and release evidence."""
 import argparse
@@ -28,6 +31,17 @@ def validate(root=ROOT):
                 raise ValueError(f'{name}: missing/duplicate platform {row["id"]}')
         if 'continue-on-error: true' in text:
             raise ValueError(f'{name}: platform failures may not be ignored')
+        if "python3 tools/ci_cross.py '${{ matrix.id }}'" not in text:
+            raise ValueError(f'{name}: QEMU acceptance must use the amd64 cross-build pipeline')
+        build = re.search(r'(?ms)^  (?:platform|build):\n(.*?)(?=^  [a-z][\w-]*:\n|\Z)', text)
+        if not build or 'persist-credentials: false' not in build.group(1):
+            raise ValueError(f'{name}: checkout credentials may not enter build/runtime containers')
+    sdk = (root / 'tools/ci_cross.Dockerfile').read_text()
+    if not re.search(r'^FROM debian@sha256:[0-9a-f]{64}$', sdk, re.M):
+        raise ValueError('the amd64 cross SDK base image must be immutable')
+    for row in rows:
+        if row['executor'] == 'qemu' and not re.fullmatch(r'[\w./-]+@sha256:[0-9a-f]{64}', row.get('image', '')):
+            raise ValueError('QEMU runtime base images must be immutable')
     return rows
 
 
@@ -46,6 +60,19 @@ def acceptance(directory, commit, rows, pin=None):
                 or report.get('wave_version') != pin['version']
                 or not re.fullmatch('[0-9a-f]{64}', report.get('compiler_sha256', ''))):
             raise ValueError(f'invalid acceptance evidence for {row["id"]}')
+        if row['executor'] == 'qemu':
+            if (report.get('build_method') != 'cross'
+                    or report.get('build_host') != 'x86_64-unknown-linux-gnu'
+                    or report.get('execution_arch') != row['arch']
+                    or not re.fullmatch(r'sha256:[0-9a-f]{64}', report.get('sdk_image', ''))
+                    or not re.fullmatch(r'sha256:[0-9a-f]{64}', report.get('runtime_image', ''))
+                    or not report.get('cross_compiler') or not report.get('cross_packages')):
+                raise ValueError(f'invalid cross-build evidence for {row["id"]}')
+            fixtures = report.get('fixtures', {})
+            expected = {'fake_wavec', 'target_wavec', 'native_wavec', 'artifact_wavec', 'doctor_tools', 'version_probe'}
+            if (set(fixtures) != expected or any(not re.fullmatch('[0-9a-f]{64}', item.get(key, ''))
+                    for item in fixtures.values() for key in ('source_sha256', 'binary_sha256'))):
+                raise ValueError(f'incomplete target fixture evidence for {row["id"]}')
 
 
 if __name__ == '__main__':

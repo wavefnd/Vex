@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 //! An opt-in event stream separate from compiler and runtime stdio.
 use diagnostic::Error;
 use serde_json::{json, Value};
@@ -111,6 +115,11 @@ impl Messages {
             )));
         }
         Ok(())
+    }
+    pub fn program_event(&mut self, value: Value) {
+        if let Err(error) = self.emit(value) {
+            crate::ui::warning(error);
+        }
     }
     pub fn status(&mut self, phase: &str) -> Result<(), Error> {
         self.emit(json!({"event":"status", "phase":phase}))

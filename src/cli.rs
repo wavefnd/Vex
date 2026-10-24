@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use colorex::Colorize;
 use std::io::IsTerminal;
 
@@ -43,7 +47,50 @@ fn run_reported() -> Result<i32, diagnostic::Error> {
             runtime.extend(raw);
             break;
         }
-        if arg == "--quiet" || arg == "-q" {
+        if arg == "-p"
+            || arg == "--package"
+            || arg.to_str().is_some_and(|s| s.starts_with("--package="))
+        {
+            let inline = arg
+                .to_str()
+                .and_then(|s| s.strip_prefix("--package="))
+                .map(str::to_owned);
+            let value = inline
+                .or_else(|| raw.next().and_then(|s| s.into_string().ok()))
+                .filter(|s| !s.is_empty() && !s.starts_with('-'))
+                .ok_or_else(|| Error::usage("--package requires a package name"))?;
+            selection.packages.push(value);
+        } else if arg == "--workspace" {
+            if selection.all_packages {
+                return Err(Error::usage("--workspace may only be specified once"));
+            }
+            selection.all_packages = true;
+        } else if arg == "--features" || arg.to_str().is_some_and(|s| s.starts_with("--features="))
+        {
+            let inline = arg
+                .to_str()
+                .and_then(|s| s.strip_prefix("--features="))
+                .map(str::to_owned);
+            let value = inline
+                .or_else(|| raw.next().and_then(|s| s.into_string().ok()))
+                .ok_or_else(|| Error::usage("--features requires a comma-separated list"))?;
+            if value.starts_with('-') || value.split(',').any(str::is_empty) {
+                return Err(Error::usage("empty feature name"));
+            }
+            selection
+                .graph
+                .features
+                .extend(value.split(',').map(str::to_owned));
+        } else if arg == "--include-tests" {
+            selection.graph.include_tests = true;
+        } else if arg == "--no-default-features" {
+            if selection.graph.no_default_features {
+                return Err(Error::usage(
+                    "--no-default-features may only be specified once",
+                ));
+            }
+            selection.graph.no_default_features = true;
+        } else if arg == "--quiet" || arg == "-q" {
             quiet = true;
         } else if arg == "--verbose" || arg == "-v" || arg == "-vv" {
             verbosity = (verbosity + if arg == "-vv" { 2 } else { 1 }).min(2);
@@ -80,13 +127,94 @@ fn run_reported() -> Result<i32, diagnostic::Error> {
         ));
     }
     crate::ui::configure(quiet, verbosity);
+    if selection.all_packages && !selection.packages.is_empty() {
+        return Err(Error::usage(
+            "--workspace cannot be combined with --package",
+        ));
+    }
+    if (selection.all_packages || !selection.packages.is_empty())
+        && !args.first().is_some_and(|s| {
+            matches!(
+                s.as_str(),
+                "test"
+                    | "add"
+                    | "remove"
+                    | "build"
+                    | "check"
+                    | "run"
+                    | "fetch"
+                    | "update"
+                    | "tree"
+                    | "metadata"
+                    | "info"
+                    | "doctor"
+            )
+        })
+    {
+        return Err(Error::usage(
+            "package selection requires a workspace project command",
+        ));
+    }
+    if selection.graph.include_tests
+        && !args
+            .first()
+            .is_some_and(|s| matches!(s.as_str(), "fetch" | "update" | "tree" | "metadata"))
+    {
+        return Err(Error::usage("--include-tests selects a dependency query graph; vex test includes tests automatically"));
+    }
+    let graph_command = args.first().is_some_and(|s| {
+        matches!(
+            s.as_str(),
+            "test" | "build" | "check" | "run" | "fetch" | "update" | "tree" | "metadata"
+        )
+    });
+    if !graph_command
+        && (!selection.graph.features.is_empty() || selection.graph.no_default_features)
+    {
+        return Err(Error::usage(
+            "feature selection requires a build or dependency graph command",
+        ));
+    }
+    if args
+        .first()
+        .is_some_and(|s| matches!(s.as_str(), "fetch" | "update" | "tree" | "metadata"))
+    {
+        let mut position = 1;
+        while position < args.len() {
+            let value = if args[position] == "--target" {
+                if position + 1 >= args.len() {
+                    return Err(Error::usage("--target requires a triple"));
+                }
+                let value = args.remove(position + 1);
+                args.remove(position);
+                Some(value)
+            } else if let Some(value) = args[position].strip_prefix("--target=") {
+                let value = value.to_owned();
+                args.remove(position);
+                Some(value)
+            } else {
+                None
+            };
+            if let Some(value) = value {
+                if selection.graph.target.is_some() {
+                    return Err(Error::usage("--target may only be specified once"));
+                }
+                selection.graph.target =
+                    Some(source::graph::Context::new(&value).map_err(Error::usage)?);
+            } else {
+                position += 1;
+            }
+        }
+    }
     let command = args.first().map(String::as_str).unwrap_or("help");
-    let dry_run = matches!(command, "build" | "check" | "run" | "clean" | "prune")
-        && args
-            .iter()
-            .skip(1)
-            .take_while(|s| s.as_str() != "--")
-            .any(|s| s == "--dry-run");
+    let dry_run = matches!(
+        command,
+        "test" | "build" | "check" | "run" | "clean" | "prune" | "cache"
+    ) && args
+        .iter()
+        .skip(1)
+        .take_while(|s| s.as_str() != "--")
+        .any(|s| s == "--dry-run");
     let mut messages = Messages::open(path.as_deref(), command, dry_run)?;
     messages.emit(json!({"event":"started"}))?;
     let result = process::install_handlers()
@@ -168,7 +296,10 @@ fn dispatch(
     if selection.manifest_path.is_some()
         && !matches!(
             args[0].as_str(),
-            "build"
+            "test"
+                | "add"
+                | "remove"
+                | "build"
                 | "run"
                 | "check"
                 | "fetch"
@@ -185,8 +316,23 @@ fn dispatch(
             "--manifest-path is only valid for project commands",
         ));
     }
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+        && crate::command_spec::help(Some(&args[0]))?
+    {
+        return Ok(Outcome::success());
+    }
     match args[0].as_str() {
+        "new" => crate::commands::new::new(&args[1..]).map(|()| Outcome::success()),
+        "add" | "remove" => crate::commands::edit::edit(args[0] == "remove", &args[1..], selection)
+            .map(|()| Outcome::success()),
+        "completions" => crate::command_spec::completions(&args[1..]).map(|()| Outcome::success()),
+        "manpage" => crate::command_spec::manpage(&args[1..]).map(|()| Outcome::success()),
+        "cache" => crate::commands::cache::cache(&args[1..]).map(|()| Outcome::success()),
         "init" => init(&args[1..]).map(|()| Outcome::success()),
+        "test" => build(BuildMode::Test, &args[1..], runtime, selection, messages),
         "build" => build(BuildMode::Build, &args[1..], runtime, selection, messages),
         "run" => run_package(&args[1..], runtime, selection, messages),
         "check" => check(&args[1..], runtime, selection, messages),
@@ -234,41 +380,5 @@ fn print_version() -> Result<(), diagnostic::Error> {
 }
 
 fn print_help() -> Result<(), diagnostic::Error> {
-    diagnostic::outln!("Vex - Wave package manager");
-    diagnostic::outln!();
-    diagnostic::outln!("Usage:");
-    diagnostic::outln!(
-        "  vex [-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] <command> [options]"
-    );
-    diagnostic::outln!("  vex init [--lib]");
-    diagnostic::outln!(
-        "  vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]"
-    );
-    diagnostic::outln!(
-        "  vex run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]"
-    );
-    diagnostic::outln!(
-        "  vex check [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]"
-    );
-    diagnostic::outln!("  vex fetch [--locked] [--offline]");
-    diagnostic::outln!("  vex update [<package>...]");
-    diagnostic::outln!("  vex info");
-    diagnostic::outln!(
-        "  vex metadata [--format=json] [--format-version <1|2>] [--locked] [--offline]"
-    );
-    diagnostic::outln!("  vex tree [--invert <name>] [--depth <n>] [--locked] [--offline]");
-    diagnostic::outln!("  vex clean [--dry-run]");
-    diagnostic::outln!("  vex prune [--apply] [--dry-run]");
-    diagnostic::outln!("  vex doctor [--format=json] [--target <triple>]");
-    diagnostic::outln!("  vex setup wavec [--version <version>] [--script-fallback]");
-    diagnostic::outln!("  vex --version");
-    diagnostic::outln!();
-    diagnostic::outln!("Output:");
-    diagnostic::outln!(
-        "  -q, --quiet    Hide Vex progress; keep results, warnings, errors, and program output"
-    );
-    diagnostic::outln!(
-        "  -v, --verbose  Show decisions; repeat (-vv) for redacted diagnostic detail"
-    );
-    Ok(())
+    crate::command_spec::help(None).map(|_| ())
 }

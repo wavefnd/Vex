@@ -101,6 +101,7 @@ dependencies = [
  "diagnostic",
  "process",
  "serde_json",
+ "sha2",
  "state",
  "toolchain",
 ]
@@ -408,6 +409,9 @@ name = "lockfile"
 version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
+ "serde",
+ "serde_json",
+ "sha2",
  "source",
  "wson",
 ]
@@ -424,6 +428,7 @@ version = "0.0.2-beta"
 dependencies = [
  "diagnostic",
  "semver",
+ "serde_json",
  "source",
  "wson",
 ]
@@ -553,6 +558,7 @@ dependencies = [
  "sha2",
  "source",
  "state",
+ "wson",
 ]
 
 [[package]]
@@ -657,6 +663,7 @@ name = "source"
 version = "0.0.2-beta"
 dependencies = [
  "percent-encoding",
+ "serde",
  "url",
 ]
 
@@ -802,6 +809,7 @@ dependencies = [
  "source",
  "state",
  "toolchain",
+ "wson",
 ]
 
 [[package]]

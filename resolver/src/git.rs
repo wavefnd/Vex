@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use diagnostic::Error;
 use std::fs;
 use std::path::Path;
@@ -80,7 +84,7 @@ pub(crate) fn ensure_repository(
     } else {
         run(
             command()
-                .args(["clone", "--", url])
+                .args(["clone", "--no-hardlinks", "--dissociate", "--", url])
                 .arg(git_cli_path(destination).as_ref()),
             "clone Git dependency",
         )?;
@@ -410,7 +414,7 @@ pub(crate) fn command_in(destination: &Path) -> Command {
     command
 }
 
-fn command() -> Command {
+pub(crate) fn command() -> Command {
     let mut command = Command::new("git");
     command.args(["-c", "protocol.ext.allow=never"]);
     // Canonical checkout names plus transaction staging can exceed MAX_PATH
@@ -472,7 +476,7 @@ fn inject_failure(_action: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn run(command: &mut Command, action: &str) -> Result<(), Error> {
+pub(crate) fn run(command: &mut Command, action: &str) -> Result<(), Error> {
     inject_failure(action)?;
     let output = command
         .supervised_output()

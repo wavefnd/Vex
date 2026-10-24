@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -407,7 +411,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn sync_tree(path: &Path) -> Result<(), String> {
+pub(crate) fn sync_tree(path: &Path) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(err)?;
     if meta.file_type().is_symlink() {
         return Ok(());

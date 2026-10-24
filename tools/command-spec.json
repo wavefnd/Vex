@@ -1,0 +1,105 @@
+{
+  "globals": "[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests]",
+  "commands": [
+    {
+      "name": "init",
+      "usage": "init [--lib]",
+      "description": "Manage init"
+    },
+    {
+      "name": "build",
+      "usage": "build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]",
+      "description": "Compile selected package targets"
+    },
+    {
+      "name": "run",
+      "usage": "run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]",
+      "description": "Compile and execute one binary"
+    },
+    {
+      "name": "check",
+      "usage": "check [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]",
+      "description": "Check selected package targets"
+    },
+    {
+      "name": "test",
+      "usage": "test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]",
+      "description": "Compile and execute explicit main-based tests; run every selected test and return the first failure"
+    },
+    {
+      "name": "fetch",
+      "usage": "fetch [--locked] [--offline] [--target <triple>]",
+      "description": "Manage fetch"
+    },
+    {
+      "name": "update",
+      "usage": "update [<package>...] [--target <triple>]",
+      "description": "Manage update"
+    },
+    {
+      "name": "info",
+      "usage": "info",
+      "description": "Manage info"
+    },
+    {
+      "name": "metadata",
+      "usage": "metadata [--format=json] [--format-version <1|2>] [--locked] [--offline] [--target <triple>]",
+      "description": "Manage metadata"
+    },
+    {
+      "name": "tree",
+      "usage": "tree [--invert <name>] [--depth <n>] [--locked] [--offline] [--target <triple>]",
+      "description": "Manage tree"
+    },
+    {
+      "name": "clean",
+      "usage": "clean [--dry-run]",
+      "description": "Manage clean"
+    },
+    {
+      "name": "prune",
+      "usage": "prune [--apply] [--dry-run]",
+      "description": "Manage prune"
+    },
+    {
+      "name": "doctor",
+      "usage": "doctor [--format=json] [--target <triple>]",
+      "description": "Manage doctor"
+    },
+    {
+      "name": "setup",
+      "usage": "setup wavec [--version <version>] [--script-fallback]",
+      "description": "Manage setup"
+    },
+    {
+      "name": "new",
+      "usage": "new <path> [--name <name>] [--lib] [--git]",
+      "description": "Create a new project without overwriting data"
+    },
+    {
+      "name": "add",
+      "usage": "add <name> (--git <url>|--path <path>) [--branch <ref>|--tag <ref>|--rev <rev>] [--version <version>] [--version-req <requirement>] [--package-name <name>] [--subdir <path>] [--offline]",
+      "description": "Add a direct dependency preserving comments and formatting"
+    },
+    {
+      "name": "remove",
+      "usage": "remove <name> [--offline]",
+      "description": "Remove a direct dependency preserving comments and formatting"
+    },
+    {
+      "name": "cache",
+      "usage": "cache prune [--apply] [--dry-run]",
+      "description": "Explicitly prune shared Git objects"
+    },
+    {
+      "name": "completions",
+      "usage": "completions <bash|zsh|fish|powershell>",
+      "description": "Print shell completion script"
+    },
+    {
+      "name": "manpage",
+      "usage": "manpage",
+      "description": "Print the vex(1) manual"
+    }
+  ]
+}

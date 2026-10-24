@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use crate::{project::Selection, ui};
 use diagnostic::Error;
 
@@ -13,7 +17,7 @@ pub fn clean(args: &[String], selection: &Selection) -> Result<(), Error> {
         _ => return Err(Error::usage(USAGE)),
     };
     let _project = selection.enter()?;
-    manifest::Manifest::load()?;
+    let _manifest = _project.primary();
     let root = std::env::current_dir().map_err(Error::environment)?;
     for name in [".vex", ".vex/init.json", ".vex/transaction.json"] {
         state::reject_link(&root.join(name)).map_err(Error::environment)?;

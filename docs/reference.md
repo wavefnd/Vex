@@ -114,7 +114,7 @@ published checkouts with an intact ownership record are eligible. Dirty,
 untracked, ignored, modified Git metadata, legacy/unrecorded checkouts, and
 unknown files are preserved. Both cleanup commands refuse pending recovery;
 use a normal `fetch` to recover first. Transaction backups and compiler
-installations are outside cleanup scope. No shared dependency cache exists, so
+installations are outside cleanup scope. A verified shared Git cache may restore exact commits; otherwise
 reusing a pruned dependency may require network access through `fetch`.
 
 ## Environment
@@ -194,3 +194,28 @@ entries with `package_target: {name, kind}` and the validated `compiler_plan`.
 It replaces the previous direct compiler-plan output. Planning runs once per
 selected target; capability queries are cached within the invocation. See the
 [full build contract](targets-and-profiles.md).
+
+## Verified build reuse
+
+Freshness records live in owned `target/.vex-cache/<content-key>/` directories.
+Inputs include package and transitive `.wave` sources and manifests, the exact
+union lock, selected features, target capabilities/schema and profile arguments,
+native prebuilt inputs, compiler executable/runtime libraries, standard-library
+contents and relevant toolchain environment. File timestamps are not freshness.
+Input contents are checked again before reuse and before recording successful
+compilation. Failed compilation and program/test results are never recorded.
+
+The initial implementation establishes compiler runtime closure on Linux ELF
+hosts with `ldd`; other hosts, unavailable queries, symlinks, unknown native
+source dependencies, SDK/custom linker settings and implicit hosted system links
+compile normally without reuse. Check/object plans can be reused when complete
+inputs are known. Wasm links additionally require an absolute linker with known
+runtime and declared inputs. Correctness takes precedence over the hit rate.
+
+Every command still validates its compiler plan and destination ownership. Hits
+verify cached bytes and copy them into owned outputs, including a new inode for
+each run generation. Missing, partial or corrupt entries are misses; unknown or
+modified cache data is not silently overwritten. `clean` handles unmodified
+owned cache files and preserves modified files. There is no automatic GC.
+Verbose output explains eligibility, fresh copies, dirty/missing entries and
+rebuilds; JSONL exposes a `freshness` event with `reused`.

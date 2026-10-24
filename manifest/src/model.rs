@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
@@ -135,7 +139,7 @@ pub(crate) fn legacy(name: &str, lib: bool, native: Option<&NativeConfig>) -> Mo
 
 pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String> {
     let target_object = object(data.get("targets"), "manifest field `targets`")?;
-    reject_unknown_fields(target_object, &["lib", "bins"], "targets")?;
+    reject_unknown_fields(target_object, &["lib", "bins", "tests"], "targets")?;
     let mut targets = Vec::new();
     if let Some(value) = target_object.get("lib") {
         let library = object(Some(value), "targets.lib")?;
@@ -189,7 +193,7 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
             platform,
         });
     }
-    if targets.is_empty() {
+    if targets.is_empty() && array(target_object, "tests", "targets")?.is_empty() {
         return Err("format 3 requires at least one explicitly declared target".into());
     }
     let default_run = string(data, "default_run", "manifest")?;
@@ -466,6 +470,27 @@ fn string(object: &WsonMap, field: &str, context: &str) -> Result<Option<String>
         )),
         Some(_) => Err(format!("{context} field `{field}` must be a string")),
     }
+}
+
+pub(crate) fn parse_tests(data: &WsonMap, name: &str) -> Result<Vec<PackageTarget>, String> {
+    let Some(WsonValue::Object(targets)) = data.get("targets") else {
+        return Ok(vec![]);
+    };
+    let tests = array(targets, "tests", "targets")?;
+    if tests.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut model = data.clone();
+    model.remove("default_run");
+    model.remove("target_config");
+    model.insert(
+        "targets".into(),
+        WsonValue::Object(WsonMap::from([(
+            "bins".into(),
+            WsonValue::Array(tests.to_vec()),
+        )])),
+    );
+    parse(&model, name).map(|model| model.targets)
 }
 
 #[cfg(test)]

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use compiler::Compiler;
 use diagnostic::Error;
 use manifest::{Manifest, TargetKind};
@@ -148,7 +152,7 @@ pub fn doctor(args: &[String], selection: &crate::project::Selection) -> Result<
         project
             .map(|project| {
                 let path = path_text(&project.manifest_path)?;
-                let manifest = Manifest::load()?;
+                let manifest = project.primary();
                 Ok((project, path, manifest))
             })
             .transpose()
@@ -217,19 +221,21 @@ pub fn doctor(args: &[String], selection: &crate::project::Selection) -> Result<
         );
     }
     match project {
-        Ok(Some((_project, path, manifest))) => {
+        Ok(Some((project, path, manifest))) => {
             report.check(
                 "project", "ok", false, &format!("{} at {path}", manifest.name),
                 json!({"manifest_path":path, "name":manifest.name, "manifest_format":manifest.format}),
             );
-            inspect_project(
-                &mut report,
-                &manifest,
-                compiler.as_mut(),
-                compatible_target,
-                target.as_deref(),
-                &host,
-            );
+            for member in &project.selected {
+                inspect_project(
+                    &mut report,
+                    member,
+                    compiler.as_mut(),
+                    compatible_target,
+                    target.as_deref(),
+                    &host,
+                );
+            }
         }
         Ok(None) => {
             report.check(
@@ -478,7 +484,22 @@ fn inspect_project(
         );
         return;
     }
-    let resolution = match resolver::inspect(manifest, false, |_, _| {}) {
+    let mut graph_selection = source::graph::Selection::default();
+    if let Some(target) = target {
+        match source::graph::Context::new(target) {
+            Ok(context) => graph_selection.target = Some(context),
+            Err(error) => {
+                report.failure("local_graph", Error::resolution(error));
+                return;
+            }
+        }
+    }
+    let mut resolution = match resolver::inspect_selected(
+        manifest,
+        false,
+        graph_selection.clone(),
+        |_, _| {},
+    ) {
         Ok(resolution) => resolution,
         Err(error) => {
             report.check(
@@ -514,14 +535,6 @@ fn inspect_project(
     };
     let profile = &manifest.profiles["dev"];
     let prerequisite = (|| {
-        for package in resolution.packages() {
-            let directory = match &package.source {
-                lockfile::LockedSource::Path { resolved, .. }
-                | lockfile::LockedSource::Git { resolved, .. } => resolved,
-            };
-            let manifest = Manifest::load_from(directory.join(manifest::MANIFEST_FILE))?;
-            compiler.validate_version(manifest.compiler.as_deref())?;
-        }
         let spec = compiler.target_spec(target)?;
         Ok(spec["triple"].as_str().unwrap().to_owned())
     })();
@@ -535,6 +548,18 @@ fn inspect_project(
     let mut planned_paths = Vec::new();
     for package_target in targets {
         let result = (|| {
+            let mut context = source::graph::Context::new(&triple).map_err(Error::resolution)?;
+            if let Some(mode) = manifest.platform_for(package_target, &triple).mode {
+                context.mode = mode.as_str().into();
+            }
+            graph_selection.target = Some(context);
+            resolution.activate_root(&manifest.source_path, &graph_selection)?;
+            for package in resolution.packages() {
+                let directory = package.directory();
+                let manifest = Manifest::load_from(directory.join(manifest::MANIFEST_FILE))?;
+                compiler.validate_version(manifest.compiler.as_deref())?;
+            }
+
             let native = crate::native::prepare_target(
                 manifest,
                 package_target,

@@ -1,1 +1,40 @@
-*.wave linguist-language=Wave
+# Repository text is LF regardless of each contributor's core.autocrlf.
+* text=auto eol=lf
+*.rs text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.ws text eol=lf
+*.lock text eol=lf
+*.wave text eol=lf linguist-language=Wave
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.xz binary
+*.bz2 binary
+*.tar binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.so binary
+*.a binary
+*.o binary
+*.lib binary
+*.wasm binary
+*.woff binary
+*.woff2 binary
+*.bin binary

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // SPDX-License-Identifier: MPL-2.0
 
+mod support;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -36,14 +37,7 @@ impl Fixture {
             include_str!("fixtures/fake_wavec.rs"),
         )
         .unwrap();
-        success(
-            &Command::new("rustc")
-                .arg(self.root.join("fake.rs"))
-                .arg("-o")
-                .arg(&self.compiler)
-                .output()
-                .unwrap(),
-        );
+        support::compile_fixture("fake_wavec", &self.compiler);
     }
 
     fn command(&self, args: &[&str]) -> Command {

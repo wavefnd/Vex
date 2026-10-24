@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use diagnostic::Error;
 use std::borrow::Cow;
 /// Filesystem identity is independent of platform case folding and reserved
@@ -34,7 +38,11 @@ pub(crate) fn resolve_path(path: &str, manifest_path: &Path) -> PathBuf {
 
 pub(crate) fn relative_to_root(path: &Path, root: &Path) -> PathBuf {
     if let Ok(relative) = path.strip_prefix(root) {
-        return relative.to_path_buf();
+        return if relative.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            relative.to_path_buf()
+        };
     }
 
     let path_components = path.components().collect::<Vec<_>>();
@@ -131,6 +139,20 @@ pub(crate) fn git_cli_path(path: &Path) -> Cow<'_, Path> {
     #[cfg(not(windows))]
     {
         Cow::Borrowed(path)
+    }
+}
+
+pub(crate) fn portable_path(path: &Path) -> Result<String, Error> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| Error::resolution("dependency graph cannot represent a non-UTF-8 path"))?;
+    #[cfg(windows)]
+    {
+        Ok(value.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(value.to_owned())
     }
 }
 

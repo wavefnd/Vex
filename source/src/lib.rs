@@ -1,5 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 //! Git source identity and credential-safe rendering. Transport credentials are
 //! ephemeral; source declarations remain in user-controlled manifests only.
+pub mod graph;
 use std::sync::{Mutex, OnceLock};
 use url::Url;
 
@@ -141,6 +146,23 @@ pub fn redact(message: &str) -> String {
         rendered = rendered.replace(&secret, "[redacted]");
     }
     rendered
+}
+
+/// Portable repository-relative package selector. Dot/empty components and
+/// platform prefixes are rejected before touching a repository.
+pub fn validate_subdir(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.contains(['\\', ':', '\0'])
+        || value
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(
+            "subdir must be a nonempty portable relative path without dot or empty components"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

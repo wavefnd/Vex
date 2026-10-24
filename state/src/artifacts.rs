@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 //! Conservative ownership of compiler outputs. All registry access is made
 //! while the caller owns the project guard; run leases outlive that guard.
 use crate::{atomic_rename, ensure_dir, inherit, reject_link, Guard};

@@ -191,3 +191,27 @@ references and missing platform lanes. No dependency-update bot is enabled.
 CI uses PR runs for feature branches and push runs for master. Superseded runs
 with the same PR/branch identity are cancelled; release runs use their separate,
 non-cancelling concurrency group.
+
+## Source licensing and line endings
+
+Own Rust source (including executable test fixtures), Python/shell/PowerShell and
+Windows command scripts, TOML and YAML configuration carry the full MPL 2.0 source
+notice plus `SPDX-License-Identifier: MPL-2.0` near the start, after any shebang.
+Copyright attribution remains centralized in the existing project files.
+Third-party/vendor files keep their original ownership. Generated Cargo locks,
+CLI manuals/completions and notices are not relabeled. JSON and exact WSON/lock/
+Wave syntax fixtures are exempt where comments would change meaning or diagnostics.
+
+Text defaults to LF through `.gitattributes`; cmd/bat scripts use CRLF. Declared
+binary formats are not normalized. This policy's normalization is grouped in the
+repository-policy commit. `python3 tools/source_policy.py` checks both source
+headers and worktree line endings without fixing files implicitly.
+
+The existing read-only Quality CI checks every contribution commit in the PR's
+exact `base..head` range. Old base history is not checked retroactively. Each
+commit needs a real author-matching `Signed-off-by: Name <email>` trailer; bots
+and ordinary merges are not exempt. Only GitHub-generated merges verified by
+GitHub's API and signature metadata receive the merge exception. Synthetic PR
+merge refs are not used as contribution heads. No DCO application or repository
+write token is used. Repair your own missing certification with
+`git commit --amend -s`, or rebase and sign off the affected contribution commits.

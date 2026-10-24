@@ -1,3 +1,8 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+mod support;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -24,13 +29,7 @@ impl Fixture {
         fs::write(root.join("vex.lock"), "{version=2,package=[]}\n").unwrap();
         fs::write(root.join("fake.rs"), include_str!("fixtures/fake_wavec.rs")).unwrap();
         let compiler = root.join(if cfg!(windows) { "wavec.exe" } else { "wavec" });
-        assert!(Command::new("rustc")
-            .arg(root.join("fake.rs"))
-            .arg("-o")
-            .arg(&compiler)
-            .status()
-            .unwrap()
-            .success());
+        support::compile_fixture("fake_wavec", &compiler);
         Self { root, compiler }
     }
     fn command(&self, args: &[&str]) -> Command {

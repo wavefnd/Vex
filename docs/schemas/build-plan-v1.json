@@ -2,17 +2,38 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Vex build-plan v1",
   "type": "object",
-  "required": ["schema", "schema_version", "target", "profile", "plans"],
+  "required": [
+    "schema",
+    "schema_version",
+    "target",
+    "profile",
+    "plans"
+  ],
   "properties": {
-    "schema": {"const": "vex.build-plan"},
-    "schema_version": {"const": 1},
-    "target": {"type": "string"},
+    "schema": {
+      "const": "vex.build-plan"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "target": {
+      "type": "string"
+    },
     "profile": {
       "type": "object",
-      "required": ["name", "opt_level"],
+      "required": [
+        "name",
+        "opt_level"
+      ],
       "properties": {
-        "name": {"type": "string"},
-        "opt_level": {"type": "integer", "minimum": 0, "maximum": 3}
+        "name": {
+          "type": "string"
+        },
+        "opt_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
       }
     },
     "plans": {
@@ -20,17 +41,47 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["package_target", "compiler_plan"],
+        "required": [
+          "package_target",
+          "compiler_plan"
+        ],
         "properties": {
           "package_target": {
             "type": "object",
-            "required": ["name", "kind"],
+            "required": [
+              "name",
+              "kind"
+            ],
             "properties": {
-              "name": {"type": "string"},
-              "kind": {"enum": ["library", "binary"]}
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "library",
+                  "binary"
+                ]
+              }
             }
           },
-          "compiler_plan": {"type": "object"}
+          "compiler_plan": {
+            "type": "object"
+          },
+          "package": {
+            "type": "string"
+          },
+          "manifest_path": {
+            "type": "string"
+          },
+          "build_directory": {
+            "type": "string"
+          },
+          "run_directory": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     }

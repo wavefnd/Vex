@@ -118,6 +118,115 @@ def target_profile_smoke(vex, root, env, host_target):
     print("Format 3 targets, output layout, custom profiles, self-import and metadata passed.", flush=True)
 
 
+def package_identity_smoke(vex, root, env):
+    for directory, version, symbol, value in (("alias_one", "1.2.3", "old_value", 11), ("alias_two", "2.0.0", "new_value", 22)):
+        package = root / directory
+        (package / "src").mkdir(parents=True)
+        (package / "vex.ws").write_text(
+            '{format=4,name="math",version="' + version + '",targets={lib={}}}', encoding="utf-8")
+        (package / "src/lib.wave").write_text(
+            f"pub fun {symbol}() -> i32 {{ return {value}; }}\n", encoding="utf-8")
+    app = root / "alias_app"
+    (app / "src").mkdir(parents=True)
+    (app / "vex.ws").write_text(
+        '{format=4,name="app",targets={bins=[{name="app",path="src/main.wave"}]},dependencies=['
+        '{name="old_math",package="math",path="../alias_one",version_req="^1"},'
+        '{name="new_math",package="math",path="../alias_two",version_req="^2"}]}', encoding="utf-8")
+    (app / "src/main.wave").write_text(
+        'import("old_math")::{old_value};\nimport("new_math")::{new_value};\n'
+        'fun main() { println("{}", old_value() + new_value()); }\n', encoding="utf-8")
+    run([vex, "fetch"], app, env)
+    result = run([vex, "run", "--locked", "--offline"], app, env)
+    if result.stdout.strip() != "33":
+        raise RuntimeError("two package versions were not imported through their explicit aliases")
+
+
+def feature_graph_smoke(vex, root, env, host_target):
+    for directory, name, version in (("feature_active", "platform", "1.0.0"), ("feature_inactive", "platform", "2.0.0"), ("feature_extra", "extras", "1.0.0")):
+        package = root / directory
+        (package / "src").mkdir(parents=True)
+        compiler = ',compiler="9.0.0"' if directory == "feature_inactive" else ""
+        (package / "vex.ws").write_text(
+            '{format=4,name="' + name + '",version="' + version + '",targets={lib={}}' + compiler + '}', encoding="utf-8")
+        (package / "src/lib.wave").write_text('pub fun value() -> i32 { return 11; }\n', encoding="utf-8")
+    app = root / "feature_app"
+    (app / "src").mkdir(parents=True)
+    other = "wasm32-unknown-unknown"
+    (app / "vex.ws").write_text(
+        '{format=4,name="app",targets={bins=[{name="app",path="src/main.wave"}]},dependencies=['
+        '{name="platform",path="../feature_active",target={triple="' + host_target + '"}},'
+        '{name="platform",path="../feature_inactive",target={triple="' + other + '"}},'
+        '{name="extras",path="../feature_extra",optional=true}],features={default=["dep:extras"]}}', encoding="utf-8")
+    (app / "src/main.wave").write_text('import("platform")::{value};\nfun main() { println("{}", value()); }\n', encoding="utf-8")
+    run([vex, "fetch", "--target", host_target], app, env)
+    locked = (app / "vex.lock").read_bytes()
+    for flags in ([], ["--no-default-features"]):
+        result = run([vex, "run", "--locked", "--offline", *flags], app, env)
+        if result.stdout.strip() != "11":
+            raise RuntimeError("selected target/feature graph did not execute correctly")
+    result = run([vex, "metadata", "--format-version", "2", "--target", other, "--locked"], app, env)
+    packages = json.loads(result.stdout)["packages"]
+    if not any(package["name"] == "platform" and package["version"] == "2.0.0" for package in packages):
+        raise RuntimeError("offline target selection did not expose its locked platform package")
+    if (app / "vex.lock").read_bytes() != locked:
+        raise RuntimeError("target or feature selection rewrote the union lockfile")
+
+
+def workspace_smoke(vex, root, env):
+    workspace = root / "workspace"
+    workspace.mkdir()
+    (workspace / "vex.ws").write_text(
+        '{format=4,compiler="0.2.1-pre-beta",workspace={members=["alpha","beta"],default_members=["beta"]}}', encoding="utf-8")
+    for directory, value in (("one", 11), ("two", 22)):
+        package = workspace / directory
+        (package / "src").mkdir(parents=True)
+        (package / "vex.ws").write_text('{format=4,name="common",version="1.0.0",targets={lib={}}}', encoding="utf-8")
+        (package / "src/lib.wave").write_text(f"pub fun value() -> i32 {{ return {value}; }}\n", encoding="utf-8")
+    for name, source in (("alpha", "one"), ("beta", "two")):
+        package = workspace / name
+        (package / "src").mkdir(parents=True)
+        library = "lib={}," if name == "alpha" else ""
+        (package / "vex.ws").write_text(
+            '{format=4,name="' + name + '",targets={' + library + 'bins=[{name="tool",path="src/main.wave"}]},dependencies=[{name="common",path="../' + source + '"}]}', encoding="utf-8")
+        if name == "alpha":
+            (package / "src/lib.wave").write_text('pub fun own() -> i32 { return 100; }\n', encoding="utf-8")
+        own = 'import("alpha")::{own};\n' if name == "alpha" else ""
+        expression = "own() + value()" if name == "alpha" else "value()"
+        (package / "src/main.wave").write_text(
+            'import("common")::{value};\n' + own + 'fun main() { println("{}", ' + expression + '); }\n', encoding="utf-8")
+    run([vex, "fetch", "--workspace"], workspace, env)
+    locked = (workspace / "vex.lock").read_bytes()
+    run([vex, "build", "--workspace", "--locked", "--offline"], workspace, env)
+    for name, expected in (("alpha", "111"), ("beta", "22")):
+        result = run([vex, "run", "-p", name, "--locked", "--offline"], workspace, env)
+        if result.stdout.strip() != expected:
+            raise RuntimeError("workspace compiler mapping or isolated output failed for " + name)
+    result = run([vex, "metadata", "--format-version", "2", "--workspace", "--locked"], workspace, env)
+    metadata = json.loads(result.stdout)
+    if metadata["root"]["kind"] != "workspace" or len(metadata["workspace_members"]) != 2:
+        raise RuntimeError("workspace metadata did not describe both members")
+    if (workspace / "vex.lock").read_bytes() != locked or any((workspace / name / ".vex").exists() for name in ("alpha", "beta")):
+        raise RuntimeError("workspace command wrote member state or changed its locked graph")
+
+
+def executable_test_smoke(vex, root, env):
+    helper = root / "test_helper"
+    (helper / "src").mkdir(parents=True)
+    (helper / "vex.ws").write_text('{format=4,name="helper",targets={lib={}}}', encoding="utf-8")
+    (helper / "src/lib.wave").write_text('pub fun value() -> i32 { return 42; }\n', encoding="utf-8")
+    app = root / "test_app"
+    (app / "tests").mkdir(parents=True)
+    (app / "vex.ws").write_text('{format=4,name="tests",targets={tests=[{name="smoke",path="tests/smoke.wave"}]},test_dependencies=[{name="helper",path="../test_helper"}]}', encoding="utf-8")
+    (app / "tests/smoke.wave").write_text('import("helper")::{value};\nfun main() { println("{}", value()); }\n', encoding="utf-8")
+    run([vex, "fetch"], app, env)
+    result = run([vex, "--message-file", "results.jsonl", "test", "--locked", "--offline"], app, env)
+    if result.stdout.strip() != "42":
+        raise RuntimeError("explicit test executable did not import its test dependency")
+    events = [json.loads(line) for line in (app / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    if not any(event.get("event") == "test_result" and event.get("exit_code") == 0 for event in events):
+        raise RuntimeError("missing executable test result")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vex", type=Path, required=True)
@@ -137,6 +246,7 @@ def main():
     env["PATH"] = str(args.wavec_bin.resolve()) + os.pathsep + env.get("PATH", "")
     with tempfile.TemporaryDirectory(prefix="vex-wave-compat-") as temporary:
         root = Path(temporary)
+        env["VEX_CACHE_HOME"] = str(root / "cache")
         # Python's Windows executable search does not use a replacement env PATH.
         # Probe this exact compiler; Vex itself still selects it through PATH.
         version = run([str(compiler), "--version"], root, dict(env, NO_COLOR="1"))
@@ -168,6 +278,10 @@ def main():
             if command == "build":
                 host_target = plan["target"]
         target_profile_smoke(vex, root, env, host_target)
+        package_identity_smoke(vex, root, env)
+        feature_graph_smoke(vex, root, env, host_target)
+        workspace_smoke(vex, root, env)
+        executable_test_smoke(vex, root, env)
         run([vex, "check", "--target", host_target, "--locked", "--offline"], nested, env)
         rejected = run([vex, "build", "--emit=obj"], app, env, succeeds=False)
         if "unknown Vex option" not in rejected.stderr:

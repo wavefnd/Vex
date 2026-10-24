@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 //! Project coordination. A guard is also an inheritable lease for synchronous
 //! Git/compiler children. Close it before spawning the user's program.
 use std::fs::{self, File, OpenOptions};
@@ -5,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub mod artifacts;
+pub mod edit;
 mod scaffold;
 pub use scaffold::initialize;
 
@@ -63,6 +68,25 @@ impl Guard {
     }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+}
+
+/// A persistent coordination inode, never an existence-based PID lock.
+/// Callers acquire the project lease before a cache lease, never in reverse.
+#[derive(Debug)]
+pub struct FileGuard(File);
+impl FileGuard {
+    pub fn exclusive(path: &Path, waiting: impl FnOnce()) -> Result<Self, String> {
+        reject_link(path)?;
+        let file = acquire_file(path, false, true, waiting).map_err(|e| e.to_string())?;
+        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("coordination path must be a regular file".into());
+        }
+        inherit(&file).map_err(|e| e.to_string())?;
+        Ok(Self(file))
+    }
+    pub fn sync(&self) -> Result<(), String> {
+        self.0.sync_all().map_err(|e| e.to_string())
     }
 }
 

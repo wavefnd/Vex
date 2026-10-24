@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 // Standalone process fixture: rustc compiles this without Cargo dependencies.
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -41,7 +45,7 @@ fn main() {
             let mut line = String::new(); std::io::stdin().read_line(&mut line).unwrap();
             print!("PROGRAM_STDIN:{line}"); eprintln!("PROGRAM_STDERR");
         }
-        println!("PROGRAM_CWD:{:?}", env::current_dir().unwrap());
+        println!("PROGRAM_CWD:{:?}", env::current_dir().unwrap().canonicalize().unwrap());
         #[cfg(unix)]
         if env::var_os("VEX_TEST_ARGUMENT_BYTES").is_some() {
             use std::os::unix::ffi::OsStrExt;
@@ -65,6 +69,7 @@ fn main() {
             println!("{{\"triple\":{target:?},\"os\":{os:?},\"object_format\":{format:?},\"hosted\":true,\"supported\":true}}");
             return;
         }
+        if args.get(1).is_some_and(|s|s=="std-path") { println!("null"); return; }
         assert_eq!(args, ["print", "supported-targets", "--format=json"]);
         println!("{}", env::var("FAKE_TARGETS").unwrap_or_else(|_| "[\"x86_64-unknown-linux-gnu\",\"aarch64-unknown-linux-gnu\"]".into()));
         return;

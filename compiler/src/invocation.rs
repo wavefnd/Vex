@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use diagnostic::Error;
 use std::ffi::OsString;
 use std::fs;
@@ -9,18 +13,68 @@ use crate::plan;
 /// Compilation ends before this value is returned. No project guard is owned
 /// here: the caller must drop its resolution/guard before calling execute().
 pub struct Execution {
+    directory: PathBuf,
     program: String,
     args: Vec<OsString>,
 }
 impl Execution {
-    pub fn execute(self) -> Result<ExitStatus, Error> {
-        process::status(Command::new(&self.program).args(&self.args), None, true)
-            .map_err(|e| Error::environment(format!("failed to run `{}`: {e}", self.program)))
+    pub fn in_directory(mut self, directory: &Path) -> Self {
+        self.directory = directory.to_owned();
+        self
     }
+    pub fn execute(self) -> Result<ExitStatus, Error> {
+        let program = runner_program(&self.program)?;
+        process::status(
+            Command::new(&program)
+                .args(&self.args)
+                .current_dir(&self.directory),
+            None,
+            true,
+        )
+        .map_err(|e| Error::environment(format!("failed to run `{}`: {e}", self.program)))
+    }
+}
+
+fn runner_program(program: &str) -> Result<PathBuf, Error> {
+    let path = Path::new(program);
+    if path.is_absolute() || path.components().count() > 1 {
+        return Ok(path.to_path_buf());
+    }
+    let root = std::env::current_dir().map_err(Error::environment)?;
+    for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        let candidate = root.join(directory).join(path);
+        #[cfg(windows)]
+        let candidate = if candidate.extension().is_none() {
+            candidate.with_extension("exe")
+        } else {
+            candidate
+        };
+        if !candidate.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::metadata(&candidate)
+                .map_err(Error::environment)?
+                .permissions()
+                .mode()
+                & 0o111
+                == 0
+            {
+                continue;
+            }
+        }
+        return Ok(candidate);
+    }
+    Err(Error::environment(format!(
+        "program runner `{program}` is unavailable on PATH"
+    )))
 }
 
 /// A validated compiler plan. Constructing it does not create build outputs.
 pub struct PreparedBuild {
+    freshness: Option<(String, String, crate::freshness::Inputs)>,
     plan: serde_json::Value,
     args: Vec<String>,
     root: PathBuf,
@@ -30,6 +84,20 @@ pub struct PreparedBuild {
     generation: Option<PathBuf>,
 }
 impl PreparedBuild {
+    pub fn with_fingerprint(
+        mut self,
+        base: &str,
+        inputs: &crate::freshness::Inputs,
+    ) -> (Self, Result<(), String>) {
+        let key = crate::freshness::key(base, &self.plan, &self.args, self.generation.as_deref());
+        let status = key.as_ref().map(|_| ()).map_err(Clone::clone);
+        self.freshness = key.ok().map(|key| (key, base.to_owned(), inputs.clone()));
+        (self, status)
+    }
+
+    pub fn cache_eligibility(&self) -> Result<(), String> {
+        crate::freshness::key("", &self.plan, &self.args, self.generation.as_deref()).map(|_| ())
+    }
     pub fn plan(&self) -> &serde_json::Value {
         &self.plan
     }
@@ -49,9 +117,18 @@ impl PreparedBuild {
     pub fn execute(
         self,
         compiler: &crate::Compiler,
+        report: Option<&mut dyn FnMut(serde_json::Value) -> Result<(), Error>>,
+    ) -> Result<Option<Execution>, Error> {
+        self.execute_reported(compiler, report, &mut |_| {})
+    }
+    pub fn execute_reported(
+        self,
+        compiler: &crate::Compiler,
         mut report: Option<&mut dyn FnMut(serde_json::Value) -> Result<(), Error>>,
+        decision: &mut dyn FnMut(String),
     ) -> Result<Option<Execution>, Error> {
         let Self {
+            freshness,
             plan,
             args,
             root,
@@ -69,51 +146,102 @@ impl PreparedBuild {
             .collect();
         let ownership = state::artifacts::Batch::prepare_with_optional(
             &root,
-            outputs,
+            outputs.clone(),
             optional_outputs.iter().cloned(),
         )
         .map_err(Error::environment)?;
-        let compile_result = (|| -> Result<ExitStatus, Error> {
-            let status = if let Some(sink) = report.as_mut() {
-                insert_build_flag(&mut compile_args, "--error-format=json");
-                let output =
-                    process::output_without_deadline(Command::new(wavec).args(&compile_args))
-                        .map_err(Error::environment)?;
-                diagnostic::output::stdout(format_args!(
-                    "{}",
-                    String::from_utf8_lossy(&output.stdout)
-                ))?;
-                // Compiler diagnostics retain their original structured payload and spans.
-                // User-program streams never pass through this compiler-only capture.
-                diagnostic::output::stderr(format_args!(
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ))?;
-                emit_diagnostics(&output.stderr, &mut **sink)?;
-                output.status
-            } else {
-                process::status(Command::new(wavec).args(&compile_args), None, false).map_err(
-                    |e| {
-                        Error::environment(format!(
-                            "failed to execute `{}` build: {e}",
-                            wavec.display()
-                        ))
-                    },
-                )?
-            };
-            Ok(status)
-        })();
-        let compile_result = compile_result.and_then(|status| {
-            if status.success() {
-                ownership.verify_outputs().map_err(Error::compiler)
-            } else {
-                Err(compiler_error(
-                    status,
-                    format!("wavec build failed [{}]", classify_exit(status)),
-                ))
+        let reused = match freshness.as_ref() {
+            Some((key, base, inputs))
+                if inputs.fingerprint().as_deref() == Ok(base.as_str())
+                    && crate::freshness::key(base, &plan, &args, generation.as_deref())
+                        .as_deref()
+                        == Ok(key.as_str()) =>
+            {
+                match crate::freshness::restore(&root, key, &outputs, &optional_outputs) {
+                    Ok(true) => {
+                        decision(
+                            "freshness: fresh; verified cached artifacts copied into owned outputs"
+                                .into(),
+                        );
+                        true
+                    }
+                    Ok(false) => {
+                        decision("freshness: dirty; cache entry is absent".into());
+                        false
+                    }
+                    Err(reason) => {
+                        decision(format!("freshness: dirty; {reason}"));
+                        false
+                    }
+                }
             }
-        });
+            _ => false,
+        };
+        if let Some(sink) = report.as_mut() {
+            sink(serde_json::json!({"event":"freshness","reused":reused,"origin":"vex"}))?;
+        }
+        let compile_result = if reused {
+            ownership.verify_outputs().map_err(Error::compiler)
+        } else {
+            let result = (|| -> Result<ExitStatus, Error> {
+                let status = if let Some(sink) = report.as_mut() {
+                    insert_build_flag(&mut compile_args, "--error-format=json");
+                    let output =
+                        process::output_without_deadline(Command::new(wavec).args(&compile_args))
+                            .map_err(Error::environment)?;
+                    diagnostic::output::stdout(format_args!(
+                        "{}",
+                        String::from_utf8_lossy(&output.stdout)
+                    ))?;
+                    // Compiler diagnostics retain their original structured payload and spans.
+                    // User-program streams never pass through this compiler-only capture.
+                    diagnostic::output::stderr(format_args!(
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ))?;
+                    emit_diagnostics(&output.stderr, &mut **sink)?;
+                    output.status
+                } else {
+                    process::status(Command::new(wavec).args(&compile_args), None, false).map_err(
+                        |e| {
+                            Error::environment(format!(
+                                "failed to execute `{}` build: {e}",
+                                wavec.display()
+                            ))
+                        },
+                    )?
+                };
+                Ok(status)
+            })();
+            result.and_then(|status| {
+                if status.success() {
+                    ownership.verify_outputs().map_err(Error::compiler)
+                } else {
+                    Err(compiler_error(
+                        status,
+                        format!("wavec build failed [{}]", classify_exit(status)),
+                    ))
+                }
+            })
+        };
         finish_compilation(compile_result, ownership.finish())?;
+        if !reused {
+            if let Some((key, base, inputs)) = freshness.as_ref() {
+                if inputs.fingerprint().as_deref() == Ok(base.as_str())
+                    && crate::freshness::key(base, &plan, &args, generation.as_deref()).as_deref()
+                        == Ok(key.as_str())
+                {
+                    match crate::freshness::store(&root, key, &outputs, &optional_outputs) {
+                        Ok(()) => decision(
+                            "freshness: rebuilt; successful output snapshot recorded".into(),
+                        ),
+                        Err(reason) => decision(format!(
+                            "freshness: rebuilt; cache was not recorded: {reason}"
+                        )),
+                    }
+                }
+            }
+        }
         if let Some(sink) = report.as_mut() {
             let mut outputs: Vec<_> = if let Some(output) = plan["link"]["output"].as_str() {
                 vec![output.to_owned()]
@@ -187,6 +315,7 @@ pub fn prepare_build(
             String::from_utf8_lossy(&validation_output.stderr)
         ))?;
     }
+    let root = std::env::current_dir().map_err(Error::environment)?;
     let separator = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let is_run = args[..separator].iter().any(|a| a == "--run");
     let execution = if is_run {
@@ -222,11 +351,36 @@ pub fn prepare_build(
                 "runner plan does not reference the generated artifact",
             ));
         }
-        let mut execution_args: Vec<OsString> = run_args.into_iter().map(OsString::from).collect();
+        let absolute_output = root
+            .join(output)
+            .to_str()
+            .ok_or_else(|| Error::resolution("run output requires a UTF-8 path"))?
+            .to_owned();
+        let executable = if program == output {
+            absolute_output.clone()
+        } else if Path::new(&program).components().count() > 1 {
+            root.join(&program)
+                .to_str()
+                .ok_or_else(|| Error::resolution("runner path requires UTF-8"))?
+                .to_owned()
+        } else {
+            program.clone()
+        };
+        let mut execution_args: Vec<OsString> = run_args
+            .into_iter()
+            .map(|arg| {
+                OsString::from(if arg == output {
+                    absolute_output.clone()
+                } else {
+                    arg
+                })
+            })
+            .collect();
         execution_args.extend_from_slice(runtime);
         Some((
             Execution {
-                program,
+                directory: root.clone(),
+                program: executable,
                 args: execution_args,
             },
             PathBuf::from(output),
@@ -252,6 +406,7 @@ pub fn prepare_build(
         args.extend(values.into_iter().map(serde_json::Value::String));
     }
     Ok(PreparedBuild {
+        freshness: None,
         plan,
         args: args[..separator].to_vec(),
         root,

@@ -87,3 +87,5 @@ Absolute paths intentionally differ when the project is moved. Object-key order
 is not an API guarantee. Consumers should ignore additive fields in their chosen
 schema; changes to existing field meanings or types require a new schema version.
 Unsupported future manifest formats fail without migration.
+
+Format 4 graphs require schema 2. See [dependency features](dependency-features.md) for binding keys, concrete IDs, union records and active selection.

@@ -204,3 +204,19 @@ verified compiler installation, and this real Wave smoke. RISC-V and LoongArch
 execute target userspace through QEMU; FreeBSD uses a VM. Cross compilation alone
 cannot produce acceptance. The public artifact checks and eventual release run
 must pass before release; local candidate results do not satisfy those gates.
+
+The QEMU lanes compile Rust tests (including doctests), Vex release binaries and
+all compiler fixtures on Linux amd64 with Rust 1.96.0 and the digest-pinned Debian
+cross SDK in `tools/ci_cross.Dockerfile`. Cargo's target runner executes tests in
+the pinned target container, where Git, Wave and user programs also execute.
+C/C++/Rust interoperability inputs and consumers are cross-compiled on amd64;
+their Wave interactions and resulting executables run in that same QEMU guest.
+Fixture source/binary hashes and ELF architectures are checked before execution.
+Reports distinguish the build host, target runtime and SDK package versions.
+Cross test builds use optimization level 1 with debug assertions and integer
+overflow checks explicitly enabled; the complete suite still executes. Native
+platform lanes retain their normal unoptimized test profile.
+On an amd64 Linux host with Docker, registered target binfmt handlers and the
+matching Rust target installed, reproduce either lane with
+`python3 tools/ci_cross.py linux-riscv64` or
+`python3 tools/ci_cross.py linux-loongarch64`.

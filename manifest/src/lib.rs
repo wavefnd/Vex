@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -5,6 +9,8 @@ mod model;
 mod native;
 mod parse;
 mod render;
+pub mod workspace;
+pub use workspace::{Workspace, WorkspaceContext};
 
 pub use model::{
     BinaryOverride, BuildProfile, PackageTarget, PlatformMode, PlatformSettings, Startup,
@@ -55,6 +61,16 @@ pub enum DependencySource {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Dependency {
+    pub test_only: bool,
+    pub binding_alias: Option<String>,
+    pub target: Option<source::graph::Predicate>,
+    pub optional: bool,
+    pub features: Vec<String>,
+    pub default_features: bool,
+    pub package: Option<String>,
+    pub version_req: Option<String>,
+    pub modern: bool,
+    pub subdir: Option<String>,
     pub name: String,
     pub version: Option<String>,
     pub source: DependencySource,
@@ -62,6 +78,11 @@ pub struct Dependency {
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
+    pub tests: Vec<PackageTarget>,
+    pub workspace: Option<Workspace>,
+    pub virtual_workspace: bool,
+    pub scope: Option<WorkspaceContext>,
+    pub fields: std::collections::BTreeSet<String>,
     pub format: u32,
     pub compiler: Option<String>,
     pub name: String,
@@ -77,7 +98,55 @@ pub struct Manifest {
     pub author: Option<String>,
     pub license: Option<String>,
     pub dependencies: Vec<Dependency>,
+    pub features: source::graph::Features,
     pub source_path: PathBuf,
+}
+
+impl Dependency {
+    pub fn import_name(&self) -> &str {
+        self.binding_alias.as_deref().unwrap_or(&self.name)
+    }
+    pub fn edge(&self, key: String) -> source::graph::Edge {
+        source::graph::Edge {
+            development: self.test_only,
+            key,
+            alias: self.import_name().into(),
+            optional: self.optional,
+            default_features: self.default_features,
+            features: self.features.clone(),
+            target: self.target.clone(),
+        }
+    }
+
+    pub fn package_name(&self) -> &str {
+        self.package.as_deref().unwrap_or(&self.name)
+    }
+    pub fn validate_version(&self, found: &str) -> Result<(), String> {
+        if self
+            .version
+            .as_ref()
+            .is_some_and(|required| required != found)
+        {
+            return Err(format!(
+                "dependency `{}` requires version `{}` but source contains version `{found}`",
+                self.import_name(),
+                self.version.as_ref().unwrap()
+            ));
+        }
+        if let Some(required) = &self.version_req {
+            let version = semver::Version::parse(found).map_err(|_| {
+                format!("dependency `{}` version `{found}` is not SemVer", self.name)
+            })?;
+            let requirement = semver::VersionReq::parse(required).map_err(|e| e.to_string())?;
+            if !requirement.matches(&version) {
+                return Err(format!(
+                    "dependency `{}` requires `{required}` but selected source contains `{found}`",
+                    self.name
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Manifest {
@@ -158,3 +227,5 @@ impl Manifest {
         platform
     }
 }
+
+mod versions;

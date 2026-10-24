@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+#[cfg(test)]
+#[path = "../../tests/support/mod.rs"]
+mod test_support;
 use flate2::read::GzDecoder;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -756,31 +763,17 @@ mod tests {
         let source = fixture.0.join("compiler.rs");
         fs::write(
             &source,
-            r#"
-            fn main() {
-                if std::env::current_exe().unwrap().file_stem().unwrap() == "broken" {
-                    eprintln!("missing compiler runtime");
-                    std::process::exit(7);
-                }
-                if std::env::var_os("NO_COLOR").is_some() {
-                    println!("wavec 0.2.1-pre-beta (platform)\n  backend: LLVM 21");
-                } else {
-                    println!("\x1b[32mwavec\x1b[0m \x1b[32m0.2.1-pre-beta\x1b[0m");
-                }
-            }
-        "#,
+            include_str!("../../tests/fixtures/version_probe.rs"),
         )
         .unwrap();
         let binary = fixture
             .0
             .join(if cfg!(windows) { "wavec.exe" } else { "wavec" });
-        assert!(Command::new("rustc")
-            .arg(source)
-            .arg("-o")
-            .arg(&binary)
-            .status()
-            .unwrap()
-            .success());
+        super::test_support::compile_fixture_from(
+            "version_probe",
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/version_probe.rs"),
+            &binary,
+        );
         verify_binary_version(&binary, "0.2.1-pre-beta").unwrap();
         let mismatch = verify_binary_version(&binary, "0.2.0-pre-beta").unwrap_err();
         assert!(mismatch.contains("does not match") && mismatch.contains("0.2.1-pre-beta"));

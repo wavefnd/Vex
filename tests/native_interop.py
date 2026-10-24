@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # SPDX-License-Identifier: MPL-2.0
 """Native C ABI acceptance against a verified Wave release on the current host.
 
@@ -17,8 +20,10 @@ import subprocess
 import tempfile
 
 
-def run(command, cwd, env, expected=0):
+def run(command, cwd, env, expected=0, *, native_tool=False):
     command = list(map(str, command))
+    if env.get("VEX_TEST_TARGET_RUNNER") and not native_tool:
+        command.insert(0, env["VEX_TEST_TARGET_RUNNER"])
     print("$", " ".join(command), flush=True)
     result = subprocess.run(command, cwd=cwd, env=env, text=True,
                             capture_output=True, timeout=300)
@@ -77,10 +82,10 @@ class NativeTools:
     def __init__(self, root, env, spec):
         self.windows = spec["os"] == "windows"
         self.env = msvc_environment(root, env, spec["arch"]) if self.windows else env
-        self.cc = required_tool("cl.exe" if self.windows else "cc", self.env)
-        self.cxx = self.cc if self.windows else required_tool("c++", self.env)
-        self.ar = required_tool("lib.exe" if self.windows else "ar", self.env)
-        self.rustc = required_tool("rustc", self.env)
+        self.cc = required_tool("cl.exe" if self.windows else self.env.get("CC", "cc"), self.env)
+        self.cxx = self.cc if self.windows else required_tool(self.env.get("CXX", "c++"), self.env)
+        self.ar = required_tool("lib.exe" if self.windows else self.env.get("AR", "ar"), self.env)
+        self.rustc = required_tool(self.env.get("RUSTC", "rustc"), self.env)
         self.object_extension = ".obj" if self.windows else ".o"
 
     def archive(self, root, name, source, cpp=False):
@@ -93,8 +98,8 @@ class NativeTools:
                  path, "/Fo" + str(obj)], root, self.env)
             run([self.ar, "/NOLOGO", "/OUT:" + str(archive), obj], root, self.env)
         else:
-            run([self.cxx if cpp else self.cc, "-fPIC", "-c", path, "-o", obj], root, self.env)
-            run([self.ar, "rcs", archive, obj], root, self.env)
+            run([self.cxx if cpp else self.cc, "-fPIC", "-c", path, "-o", obj], root, self.env, native_tool=True)
+            run([self.ar, "rcs", archive, obj], root, self.env, native_tool=True)
         return archive
 
     def rust_object(self, root):
@@ -104,7 +109,7 @@ class NativeTools:
             '-> i32 { a.wrapping_add(b) }\n', encoding="utf-8")
         obj = root / ("native_rust" + self.object_extension)
         run([self.rustc, "--edition=2021", "--crate-type=lib", "--emit=obj",
-             "-C", "panic=abort", source, "-o", obj], root, self.env)
+             "-C", "panic=abort", source, "-o", obj], root, self.env, native_tool=True)
         return obj
 
     def consume(self, root, library, shared=False):
@@ -123,7 +128,7 @@ class NativeTools:
             args = [self.cc, source, library, "-o", executable]
             if shared:
                 args.append("-Wl,-rpath," + str(library.parent))
-            run(args, root, self.env)
+            run(args, root, self.env, native_tool=True)
         env = dict(self.env)
         if shared and self.windows:
             # This is the external consumer's loader setup, not a Vex policy.

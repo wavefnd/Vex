@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
 use std::sync::atomic::{AtomicU8, Ordering};
 
 // 0: quiet, 1: normal, 2: verbose decisions, 3: diagnostic detail.
@@ -23,6 +27,11 @@ pub fn status(action: &str, message: impl AsRef<str>) {
         "{action:>12} {}\n",
         source::redact(message.as_ref())
     ));
+}
+
+/// Command results stay visible in quiet mode, unlike progress.
+pub fn result(message: impl AsRef<str>) {
+    let _ = diagnostic::output::stderr(format_args!("{}\n", source::redact(message.as_ref())));
 }
 
 pub fn verbose(message: impl AsRef<str>) {

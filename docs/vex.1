@@ -1,0 +1,73 @@
+.TH VEX 1
+.SH NAME
+vex \- Wave package manager
+.SH SYNOPSIS
+.B vex
+[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] <command> [options]
+.SH COMMANDS
+.TP
+.B vex init [\-\-lib]
+Manage init
+.TP
+.B vex build [\-\-lib] [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline]
+Compile selected package targets
+.TP
+.B vex run [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\- <args...>]
+Compile and execute one binary
+.TP
+.B vex check [\-\-lib] [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline]
+Check selected package targets
+.TP
+.B vex test [filter] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\- <args...>]
+Compile and execute explicit main-based tests; run every selected test and return the first failure
+.TP
+.B vex fetch [\-\-locked] [\-\-offline] [\-\-target <triple>]
+Manage fetch
+.TP
+.B vex update [<package>...] [\-\-target <triple>]
+Manage update
+.TP
+.B vex info
+Manage info
+.TP
+.B vex metadata [\-\-format=json] [\-\-format\-version <1|2>] [\-\-locked] [\-\-offline] [\-\-target <triple>]
+Manage metadata
+.TP
+.B vex tree [\-\-invert <name>] [\-\-depth <n>] [\-\-locked] [\-\-offline] [\-\-target <triple>]
+Manage tree
+.TP
+.B vex clean [\-\-dry\-run]
+Manage clean
+.TP
+.B vex prune [\-\-apply] [\-\-dry\-run]
+Manage prune
+.TP
+.B vex doctor [\-\-format=json] [\-\-target <triple>]
+Manage doctor
+.TP
+.B vex setup wavec [\-\-version <version>] [\-\-script\-fallback]
+Manage setup
+.TP
+.B vex new <path> [\-\-name <name>] [\-\-lib] [\-\-git]
+Create a new project without overwriting data
+.TP
+.B vex add <name> (\-\-git <url>|\-\-path <path>) [\-\-branch <ref>|\-\-tag <ref>|\-\-rev <rev>] [\-\-version <version>] [\-\-version\-req <requirement>] [\-\-package\-name <name>] [\-\-subdir <path>] [\-\-offline]
+Add a direct dependency preserving comments and formatting
+.TP
+.B vex remove <name> [\-\-offline]
+Remove a direct dependency preserving comments and formatting
+.TP
+.B vex cache prune [\-\-apply] [\-\-dry\-run]
+Explicitly prune shared Git objects
+.TP
+.B vex completions <bash|zsh|fish|powershell>
+Print shell completion script
+.TP
+.B vex manpage
+Print the vex(1) manual
+.SH FILES
+vex.ws, vex.lock
+.SH ENVIRONMENT
+VEX_WAVEC, VEX_CACHE_HOME
+.SH EXIT STATUS
+0 success; 1 internal error; 2 usage; 3 resolution; 4 compiler; 5 environment; 124 timeout; 130 cancellation. Program exit codes are preserved.
