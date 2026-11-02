@@ -173,7 +173,15 @@ fn invalid_v2_locks_fail_before_mutating_dependency_state() {
             assert!(stderr.contains("help:"), "{stderr}");
             assert_eq!(fixture.lock(), input);
             assert!(fixture.0.join("app/.vex/state.lock").is_file());
-            assert_eq!(fs::read_dir(fixture.0.join("app/.vex")).unwrap().count(), 1);
+            assert_eq!(
+                fs::read_dir(fixture.0.join("app/.vex"))
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                ["state.lock".to_owned(), "store-owner.json".to_owned()]
+                    .into_iter()
+                    .collect()
+            );
             assert_eq!(fs::read_dir(fixture.0.join("app")).unwrap().count(), 3);
         }
     }

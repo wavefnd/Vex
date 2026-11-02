@@ -79,6 +79,11 @@ impl Error {
         self.context_fields.push((key.into(), value.to_string()));
         self
     }
+    /// Add actionable guidance without replacing the original typed context.
+    pub fn with_help(mut self, help: impl fmt::Display) -> Self {
+        self.message.push_str(&format!("\nhelp: {help}"));
+        self
+    }
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

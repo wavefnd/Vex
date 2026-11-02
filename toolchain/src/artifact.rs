@@ -12,7 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const REPOSITORY: &str = "https://api.github.com/repos/wavefnd/Wave/releases";
 const DOWNLOAD: &str = "https://github.com/wavefnd/Wave/releases/download/";
@@ -117,23 +117,57 @@ fn get(url: &str) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 fn download(url: &str, path: &Path) -> Result<(), String> {
-    let output = process::output(
-        curl(url)
-            .args(["--max-filesize", &MAX_ARCHIVE.to_string(), "--output"])
-            .arg(path),
+    transfer_archive(
+        &mut archive_command(url, path),
+        path,
         Duration::from_secs(310),
     )
-    .map_err(error)?;
-    if !output.status.success() {
-        return Err(error(format!(
-            "archive download failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+}
+
+fn archive_command(url: &str, path: &Path) -> Command {
+    let mut command = curl(url);
+    command
+        .args(["--max-filesize", &MAX_ARCHIVE.to_string(), "--output"])
+        .arg(path);
+    command
+}
+
+fn transfer_archive(command: &mut Command, path: &Path, budget: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            // Each attempt starts from zero; never append to or resume a partial
+            // archive. This path is private to the unpublished install stage.
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(error(e)),
+            }
+        }
+        let output =
+            process::output(command, budget.saturating_sub(started.elapsed())).map_err(error)?;
+        if output.status.success() {
+            if fs::metadata(path).map_err(error)?.len() > MAX_ARCHIVE {
+                return Err(error("archive exceeds 512 MiB"));
+            }
+            return Ok(());
+        }
+        // Retry transport failures only (including TLS receive EOF, curl 56).
+        // HTTP rejection, certificate errors, local I/O and integrity failures
+        // are not retried. Supervisor cancellation/timeout errors return above.
+        let transient = matches!(
+            output.status.code(),
+            Some(5 | 6 | 7 | 18 | 28 | 52 | 55 | 56)
+        );
+        if !transient || attempt == 2 {
+            return Err(error(format!(
+                "archive download failed after {} attempt(s): {}",
+                attempt + 1,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
     }
-    if fs::metadata(path).map_err(error)?.len() > MAX_ARCHIVE {
-        return Err(error("archive exceeds 512 MiB"));
-    }
-    Ok(())
+    unreachable!("the final failed transfer returns its error")
 }
 
 #[derive(Debug)]
@@ -755,6 +789,147 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn with_http_server<T>(
+        responses: Vec<&'static [u8]>,
+        run: impl FnOnce(&str) -> T,
+    ) -> (T, usize) {
+        use std::net::TcpListener;
+        use std::sync::mpsc::{channel, TryRecvError};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/archive", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let (stop, stopped) = channel::<()>();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut requests = 0;
+            while matches!(stopped.try_recv(), Err(TryRecvError::Empty)) {
+                assert!(Instant::now() < deadline, "download test server timed out");
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        // Windows inherits the listener's nonblocking mode.
+                        // The accepted connection uses blocking I/O with deadlines.
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut request = Vec::new();
+                        let mut byte = [0];
+                        while !request.ends_with(b"\r\n\r\n") {
+                            assert!(request.len() < 16384);
+                            stream.read_exact(&mut byte).unwrap();
+                            request.push(byte[0]);
+                        }
+                        let response = responses[requests.min(responses.len() - 1)];
+                        requests += 1;
+                        stream.write_all(response).unwrap();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("test server: {e}"),
+                }
+            }
+            requests
+        });
+        let result = run(&url);
+        drop(stop);
+        (result, server.join().unwrap())
+    }
+
+    fn local_archive_command(url: &str, path: &Path) -> Command {
+        let mut command = archive_command(url, path);
+        // Only this loopback fixture permits HTTP; production remains HTTPS-only.
+        command.args([
+            "--proto",
+            "=http",
+            "--proto-redir",
+            "=http",
+            "--noproxy",
+            "*",
+        ]);
+        command
+    }
+
+    const PARTIAL_ARCHIVE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial response longer than final archive";
+    const COMPLETE_ARCHIVE: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\narchive";
+
+    #[test]
+    fn download_test_server_waits_for_delayed_request_headers() {
+        use std::net::TcpStream;
+        let (response, requests) = with_http_server(vec![COMPLETE_ARCHIVE], |url| {
+            let address = url
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/archive")
+                .unwrap();
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // Accept the connection before sending any bytes, then split the
+            // header terminator to exercise waits after both accept and read.
+            std::thread::sleep(Duration::from_millis(100));
+            client
+                .write_all(b"GET /archive HTTP/1.1\r\nHost: localhost\r\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            client.write_all(b"\r\n").unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            response
+        });
+        assert_eq!(response, COMPLETE_ARCHIVE);
+        assert_eq!(requests, 1);
+    }
+
+    #[test]
+    fn interrupted_archive_download_restarts_without_partial_bytes() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("download");
+        let (result, requests) = with_http_server(
+            vec![PARTIAL_ARCHIVE, PARTIAL_ARCHIVE, COMPLETE_ARCHIVE],
+            |url| {
+                transfer_archive(
+                    &mut local_archive_command(url, &path),
+                    &path,
+                    Duration::from_secs(20),
+                )
+            },
+        );
+        result.unwrap();
+        assert_eq!(requests, 3);
+        assert_eq!(fs::read(&path).unwrap(), b"archive");
+        verify_checksum(&path, &hex_digest(Sha256::digest(b"archive"))).unwrap();
+        assert!(verify_checksum(&path, &"0".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn archive_transport_retries_are_bounded_and_http_errors_are_not_retried() {
+        for (response, expected_requests) in [
+            (PARTIAL_ARCHIVE, 3),
+            (
+                &b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+                1,
+            ),
+        ] {
+            let fixture = Fixture::new();
+            let path = fixture.0.join("download");
+            let (result, requests) = with_http_server(vec![response], |url| {
+                transfer_archive(
+                    &mut local_archive_command(url, &path),
+                    &path,
+                    Duration::from_secs(20),
+                )
+            });
+            assert!(result.unwrap_err().contains("archive download failed"));
+            assert_eq!(requests, expected_requests);
         }
     }
 

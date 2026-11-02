@@ -196,7 +196,7 @@ pub fn apply_policy(
         if member
             .target_config
             .iter()
-            .any(|c| c.sysroot.is_some() || c.linker.is_some())
+            .any(|c| c.sysroot.is_some() || c.linker.is_some() || c.archiver.is_some())
         {
             return Err(diagnostic::Error::resolution(
                 "workspace sysroot/linker settings belong in the workspace root",
@@ -214,6 +214,21 @@ pub fn apply_policy(
             }
             member.compiler = Some(required.clone());
         }
+        member.reproducible = owner.reproducible;
+        let tool_path = |tool: &str| -> Result<String, diagnostic::Error> {
+            if Path::new(tool).components().count() > 1 || tool.contains('\\') {
+                Ok(root
+                    .join(tool)
+                    .to_str()
+                    .ok_or_else(|| {
+                        diagnostic::Error::resolution("workspace tool path must be UTF-8")
+                    })?
+                    .into())
+            } else {
+                Ok(tool.into())
+            }
+        };
+        member.archiver = owner.archiver.as_deref().map(tool_path).transpose()?;
         member.profiles = owner.profiles.clone();
         member.build_target = owner.build_target.clone();
         let local = std::mem::take(&mut member.target_config);
@@ -223,6 +238,8 @@ pub fn apply_policy(
             .map(|config| {
                 let mut config = config.clone();
                 config.bins.clear();
+                config.library = None;
+                config.archiver = config.archiver.as_deref().map(tool_path).transpose()?;
                 if let Some(path) = &config.sysroot {
                     config.sysroot = Some(root.join(path));
                 }
@@ -250,6 +267,7 @@ pub fn apply_policy(
                 .find(|c| c.triple == config.triple)
             {
                 existing.bins = config.bins;
+                existing.library = config.library;
             } else {
                 member.target_config.push(config);
             }

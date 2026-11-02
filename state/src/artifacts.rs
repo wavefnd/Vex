@@ -209,7 +209,8 @@ impl RunLease {
             .and_then(|p| p.to_str())
             .ok_or("invalid run generation")?;
         let expected = generation(name)?;
-        if relative(path)? != expected {
+        let relative_path = path.strip_prefix(root).unwrap_or(path);
+        if relative(relative_path)? != expected {
             return Err("invalid run generation path".into());
         }
         checked(root, &expected)?;
@@ -286,13 +287,11 @@ pub fn validate_output_paths(root: &Path, outputs: &[PathBuf]) -> Result<Vec<Str
     let mut identities = BTreeSet::<String>::new();
     for output in outputs {
         let path = if output.is_absolute() {
-            output
-                .strip_prefix(root)
-                .map_err(|_| "compiler output is outside the project")?
+            crate::layout::relative_output(root, output)?
         } else {
-            output
+            output.clone()
         };
-        let name = relative(path)?;
+        let name = relative(&path)?;
         #[cfg(windows)]
         for component in name.split('/') {
             if component.ends_with(['.', ' ']) || component.contains(':') {
@@ -468,12 +467,15 @@ pub fn has_records(root: &Path) -> Result<bool, String> {
 
 /// The caller chooses a shared guard for previews and an exclusive guard for
 /// deletion. Unknown files and directories are never recursively removed.
-pub fn clean(
-    guard: &Guard,
+pub fn clean(guard: &Guard, apply: bool, report: impl FnMut(&str, String)) -> Result<(), String> {
+    clean_at(guard, guard.root(), apply, report)
+}
+pub fn clean_at(
+    _guard: &Guard,
+    root: &Path,
     apply: bool,
     mut report: impl FnMut(&str, String),
 ) -> Result<(), String> {
-    let root = guard.root();
     for journal in [".vex/transaction.json", ".vex/init.json"] {
         reject_link(&root.join(journal))?;
         if root.join(journal).exists() {
@@ -610,4 +612,30 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
             ]
         })
         .collect()
+}
+
+/// Fingerprint used to detect edits during a recoverable publication.
+pub fn file_fingerprint(path: &Path) -> Result<Option<String>, String> {
+    fingerprint(path)
+}
+/// Record already verified transaction results after their commit or rollback.
+pub fn record_verified(root: &Path, paths: &[PathBuf]) -> Result<(), String> {
+    let names = validate_output_paths(root, paths)?;
+    let mut registry = read(root)?;
+    for name in names {
+        let path = checked(root, &name)?;
+        reject_hardlinked_output(&path)?;
+        if let Some(hash) = fingerprint(&path)? {
+            registry.files.insert(name, hash);
+        } else {
+            registry.files.remove(&name);
+        }
+    }
+    write(root, &registry)
+}
+
+/// The recorded identity, without claiming or repairing any file.
+pub fn recorded_fingerprint(root: &Path, path: &Path) -> Result<Option<String>, String> {
+    let names = validate_output_paths(root, &[path.to_owned()])?;
+    Ok(read(root)?.files.get(&names[0]).cloned())
 }

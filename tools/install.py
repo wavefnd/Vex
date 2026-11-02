@@ -43,12 +43,21 @@ def download(url, output=None):
 
 def host():
     os_name = {'Linux': 'linux', 'Darwin': 'macos', 'Windows': 'windows', 'FreeBSD': 'freebsd'}.get(platform.system())
-    arch = {'AMD64': 'x86_64', 'arm64': 'aarch64', 'ARM64': 'aarch64'}.get(platform.machine(), platform.machine())
+    arch = {'amd64': 'x86_64', 'AMD64': 'x86_64', 'arm64': 'aarch64', 'ARM64': 'aarch64'}.get(platform.machine(), platform.machine())
     rows = json.loads((ROOT / 'platforms.json').read_text())['platforms']
     found = [row for row in rows if row['os'] == os_name and row['arch'] == arch]
     if len(found) != 1:
         raise ValueError(f'unsupported host {os_name}/{arch}')
     return found[0]
+
+
+def tag_object(value):
+    obj = value.get('object') if isinstance(value, dict) else None
+    if (not isinstance(obj, dict) or obj.get('type') not in ('tag', 'commit')
+            or not isinstance(obj.get('sha'), str) or len(obj['sha']) != 40
+            or any(c not in '0123456789abcdef' for c in obj['sha'])):
+        raise ValueError('malformed release tag object: expected type and commit/tag SHA')
+    return obj
 
 
 def payload(archive, root, executable):
@@ -84,11 +93,15 @@ def main():
         raise ValueError('GitHub CLI (gh) is required to verify release provenance')
     tag = 'v' + args.version
     release = json.loads(download(f'https://api.github.com/repos/{REPO}/releases/tags/{tag}'))
+    if not isinstance(release, dict):
+        raise ValueError('malformed release metadata: expected an object')
     if release.get('draft') is not False or release.get('tag_name') != tag:
         raise ValueError('release is draft or mismatched')
     root = f"vex-{tag}-{target['rust_target']}"
     archive_name = root + '.' + target['archive']
-    assets = release['assets']
+    assets = release.get('assets')
+    if not isinstance(assets, list) or any(not isinstance(a, dict) or not isinstance(a.get('name'), str) or not isinstance(a.get('browser_download_url'), str) for a in assets):
+        raise ValueError('malformed release metadata: assets must contain named asset objects with URLs')
     def asset(name):
         found = [a for a in assets if a['name'] == name]
         expected = f'https://github.com/{REPO}/releases/download/{tag}/{name}'
@@ -115,33 +128,34 @@ def main():
             raise ValueError('release archive checksum mismatch')
         # GitHub attestation includes the immutable source commit. Verify the
         # exact tag's commit, rather than trusting release target_commitish.
-        ref = json.loads(download(f'https://api.github.com/repos/{REPO}/git/ref/tags/{tag}'))['object']
+        ref = tag_object(json.loads(download(f'https://api.github.com/repos/{REPO}/git/ref/tags/{tag}')))
         for _ in range(8):
             if ref['type'] == 'commit':
                 break
             if ref['type'] != 'tag':
                 raise ValueError('release tag does not resolve to a commit')
-            ref = json.loads(download(f'https://api.github.com/repos/{REPO}/git/tags/{ref["sha"]}'))['object']
+            ref = tag_object(json.loads(download(f'https://api.github.com/repos/{REPO}/git/tags/{ref["sha"]}')))
         if ref['type'] != 'commit':
             raise ValueError('release tag nesting limit exceeded')
-        attestations = json.loads(download(f'https://api.github.com/repos/{REPO}/attestations/sha256:{digest}')).get('attestations')
+        provenance = json.loads(download(f'https://api.github.com/repos/{REPO}/attestations/sha256:{digest}'))
+        attestations = provenance.get('attestations') if isinstance(provenance, dict) else None
         if not isinstance(attestations, list) or not attestations:
             raise ValueError('release provenance is missing')
         bundle = Path(temporary)/'attestations.jsonl'
         with bundle.open('x') as output:
             for attestation in attestations:
-                if not isinstance(attestation.get('bundle'), dict):
+                if not isinstance(attestation, dict) or not isinstance(attestation.get('bundle'), dict):
                     raise ValueError('invalid release provenance bundle')
                 output.write(json.dumps(attestation['bundle'])+'\n')
         subprocess.run(['gh', 'attestation', 'verify', str(archive), '--bundle', str(bundle), '--repo', REPO,
                         '--signer-workflow', REPO+'/.github/workflows/release.yml',
                         '--source-ref', 'refs/heads/master', '--source-digest', ref['sha'],
-                        '--signer-digest', ref['sha'], '--deny-self-hosted-runners'], check=True)
+                        '--signer-digest', ref['sha'], '--deny-self-hosted-runners'], check=True, timeout=120)
         data = payload(archive, root, executable)
         candidate = Path(temporary) / executable
         candidate.write_bytes(data)
         candidate.chmod(0o755)
-        actual = subprocess.check_output([str(candidate), '--version'], text=True).strip()
+        actual = subprocess.check_output([str(candidate), '--version'], text=True, encoding='utf-8', timeout=15).strip()
         if actual != 'vex '+args.version:
             raise ValueError('binary version does not match requested release')
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -170,5 +184,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         sys.exit(f'error: {error}')

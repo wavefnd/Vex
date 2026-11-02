@@ -1,0 +1,57 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: MPL-2.0
+name: "Bug report"
+description: "Report a reproducible defect"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials and private source before posting. Security vulnerabilities belong in [private reporting](https://github.com/wavefnd/Vex/security/advisories/new), not this public form.
+  - type: textarea
+    id: environment
+    attributes:
+      label: "Environment"
+      description: "Vex version/commit, wavec version and selection, OS and architecture."
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: "Command and reproduction"
+      description: "Commands and minimal steps, starting from a prepared or new project."
+    validations:
+      required: true
+  - type: textarea
+    id: manifest
+    attributes:
+      label: "Manifest and source"
+      description: "Minimal vex.ws and relevant source; remove secrets."
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: dependency
+    attributes:
+      label: "Dependencies and lockfile"
+      description: "For dependency bugs: path/Git source, selectors, fetch/update history, locked/offline flags, and a sanitized vex.lock."
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+      description: "What should happen?"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: "Actual behavior"
+      description: "What happened? Include complete sanitized errors."
+      render: text
+    validations:
+      required: true

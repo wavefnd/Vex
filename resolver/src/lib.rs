@@ -26,7 +26,10 @@ pub fn recover_project(guard: &state::Guard, dry_run: bool) -> Result<(), Error>
     transaction::recover(guard.root(), dry_run).map_err(|error| {
         Error::environment(error)
             .with_field("operation", "recover dependency transaction")
-            .with_field("path", guard.root().join(".vex/transaction.json").display())
+            .with_field(
+                "path",
+                state::layout::dependency(guard.root(), ".vex/transaction.json").display(),
+            )
             .with_field(
                 "recovery",
                 "run a normal project command to recover; preserve user edits",
@@ -151,7 +154,108 @@ impl Resolution {
         Ok(())
     }
 
+    pub fn requires_package_graph(&self) -> bool {
+        let mut aliases = std::collections::BTreeMap::new();
+        for package in &self.packages {
+            if package.import_name() == self.root.name
+                || aliases
+                    .insert(package.import_name(), package.id.as_ref())
+                    .is_some_and(|old| old != package.id.as_ref())
+            {
+                return true;
+            }
+        }
+        false
+    }
+    pub fn compiler_package_graph(&self) -> Result<serde_json::Value, Error> {
+        use serde_json::json;
+        let project = paths::env_root()?;
+        let root_id = activation::root_identity(&self.root);
+        let context = self
+            .selection
+            .target
+            .clone()
+            .unwrap_or_else(source::graph::Context::host);
+        let ids: std::collections::BTreeMap<_, _> = self
+            .packages
+            .iter()
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    p.id.clone().unwrap_or_else(|| {
+                        lockfile::package_identity(
+                            p.package_name(),
+                            &p.version,
+                            &p.source,
+                            p.subdir.as_deref(),
+                        )
+                    }),
+                )
+            })
+            .collect();
+        let select_edges = |edges: &[source::graph::Edge],
+                            features: &source::graph::Features,
+                            selected: &std::collections::BTreeSet<String>,
+                            tests: bool|
+         -> Result<std::collections::BTreeMap<String, String>, Error> {
+            let expanded = source::graph::expand(features, edges, selected, false)
+                .map_err(Error::resolution)?;
+            let mut bindings = std::collections::BTreeMap::new();
+            for edge in edges.iter().filter(|e| {
+                (!e.development || tests)
+                    && e.target.as_ref().is_none_or(|p| p.matches(&context))
+                    && (!e.optional || expanded.enabled.contains(&e.alias))
+            }) {
+                let id = ids
+                    .get(edge.key.as_str())
+                    .ok_or_else(|| Error::internal("selected compiler graph is incomplete"))?;
+                if bindings
+                    .insert(edge.alias.clone(), id.clone())
+                    .is_some_and(|previous| previous != *id)
+                {
+                    return Err(Error::resolution(format!(
+                        "import alias `{}` selects different active packages in one package",
+                        edge.alias
+                    )));
+                }
+            }
+            Ok(bindings)
+        };
+        let empty = std::collections::BTreeSet::new();
+        let root_features = self.selected_features.get(&root_id).unwrap_or(&empty);
+        let mut nodes = std::collections::BTreeMap::new();
+        let root_path = project
+            .join(&self.root.manifest)
+            .parent()
+            .unwrap()
+            .to_owned();
+        nodes.insert(root_id.clone(),json!({"id":root_id,"name":self.root.name,"root":paths::portable_path(&root_path)?,"dependencies":select_edges(&self.root.edges,&self.root.features,root_features,self.selection.include_tests)?}));
+        for package in &self.packages {
+            let id = ids[package.name.as_str()].clone();
+            let path = project
+                .join(package.directory())
+                .canonicalize()
+                .map_err(Error::environment)?;
+            let selected = self.selected_features.get(&id).unwrap_or(&empty);
+            let node = json!({"id":id,"name":package.package_name(),"root":paths::portable_path(&path)?,"dependencies":select_edges(&package.edges,&package.features,selected,false)?});
+            if let Some(previous) = nodes.insert(id, node.clone()) {
+                if previous != node {
+                    return Err(Error::resolution(
+                        "one package identity has inconsistent compiler bindings",
+                    ));
+                }
+            }
+        }
+        Ok(
+            json!({"schema_version":1,"root":root_id,"packages":nodes.into_values().collect::<Vec<_>>()}),
+        )
+    }
     pub fn dependency_args(&self) -> Result<Vec<String>, Error> {
+        if self.requires_package_graph() {
+            return Err(Error::compiler(
+                "this graph requires package-scoped imports; select a compatible Wave compiler",
+            ));
+        }
         let mut args = vec!["--dep-root=.vex/deps".to_string()];
         let mut aliases = BTreeSet::new();
         for package in &self.packages {
@@ -354,12 +458,8 @@ pub fn inspect_selected(
         "Trace",
         "project lease: acquired before reading vex.lock".into(),
     );
-    resolve_guarded(manifest, options, status, guard, &mut |_| Ok(()), true).map_err(|e| {
-        Error::new(
-            e.category,
-            format!("{e}\nhelp: run `vex fetch` to prepare the local graph"),
-        )
-    })
+    resolve_guarded(manifest, options, status, guard, &mut |_| Ok(()), true)
+        .map_err(|e| e.with_help("run `vex fetch` to prepare the local graph"))
 }
 
 fn report_policy(options: &ResolveOptions, status: &mut impl FnMut(&str, String)) {
@@ -444,7 +544,7 @@ fn resolve_guarded<F: FnMut(&str, String)>(
     }
     let existing = existing.unwrap_or_else(Lockfile::empty);
     let root = paths::env_root()?;
-    let dep_root = root.join(".vex/deps");
+    let dep_root = state::layout::dependency(&root, ".vex/deps");
     let root_manifest = if manifest.source_path.is_absolute() {
         manifest.source_path.clone()
     } else {

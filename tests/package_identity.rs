@@ -108,7 +108,7 @@ fn compatible_transitive_requirements_share_an_alias_and_mismatch_preserves_lock
     assert_eq!(fs::read(app.join("vex.lock")).unwrap(), old);
 }
 #[test]
-fn scoped_alias_conflicts_explain_compiler_limit_before_publication() {
+fn conflicting_transitive_names_are_locked_as_package_scoped_bindings() {
     let f = Fixture::new();
     f.package("one", "math", "1.0.0", "");
     f.package("two", "math", "2.0.0", "");
@@ -121,13 +121,19 @@ fn scoped_alias_conflicts_explain_compiler_limit_before_publication() {
         "{name=\"left\",path=\"../left\"},{name=\"right\",path=\"../right\"}",
     );
     let out = f.vex(&app, &["fetch"]);
-    assert_eq!(out.status.code(), Some(3));
-    let error = String::from_utf8_lossy(&out.stderr);
     assert!(
-        error.contains("scoped compiler dependency mappings"),
-        "{error}"
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(!app.join("vex.lock").exists());
+    let lock = lockfile::decode(&fs::read_to_string(app.join("vex.lock")).unwrap()).unwrap();
+    let math = lock
+        .packages
+        .iter()
+        .filter(|p| p.package_name() == "math")
+        .collect::<Vec<_>>();
+    assert_eq!(math.len(), 2);
+    assert_ne!(math[0].id, math[1].id);
 }
 #[test]
 fn locked_legacy_file_is_never_silently_migrated() {

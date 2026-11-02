@@ -718,3 +718,36 @@ fn conflict_reports_both_dependency_paths_as_structured_context() {
     assert!(!diagnostic["causes"].as_array().unwrap().is_empty());
     assert_eq!(fs::read(fixture.root.join("vex.lock")).unwrap(), lock);
 }
+
+#[cfg(unix)]
+#[test]
+fn aliased_os_state_root_keeps_one_physical_coordination_tree() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let home = f.root.join("physical-home");
+    let alias = f.root.join("home-alias");
+    fs::create_dir(&home).unwrap();
+    symlink(&home, &alias).unwrap();
+    let fetch = |selected: &std::path::Path| {
+        f.command(&["fetch", "--offline"])
+            .env_remove("XDG_STATE_HOME")
+            .env("HOME", selected)
+            .output()
+            .unwrap()
+    };
+    for selected in [&alias, &home] {
+        let output = fetch(selected);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let state = home.join(".local/state");
+    assert_eq!(fs::read_dir(state.join("vex/projects")).unwrap().count(), 1);
+    fs::rename(state.join("vex"), state.join("moved-vex")).unwrap();
+    symlink(state.join("moved-vex"), state.join("vex")).unwrap();
+    let rejected = fetch(&alias);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("symbolic link"));
+}

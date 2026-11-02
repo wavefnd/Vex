@@ -164,7 +164,7 @@ fn default_build_plans_library_then_sorted_binaries_once_without_mutation() {
     let before = snapshot(&f.app);
     let output = plan(&f.run(&["build", "--dry-run", "--locked", "--offline"]));
     assert_eq!(output["schema"], "vex.build-plan");
-    assert_eq!(output["schema_version"], 1);
+    assert_eq!(output["schema_version"], 2);
     assert_eq!(output["target"], triple());
     assert_eq!(output["profile"], json!({"name":"dev","opt_level":0}));
     assert_eq!(

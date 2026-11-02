@@ -1,7 +1,10 @@
 # Generated from command-spec.json
 complete -c vex -l apply
+complete -c vex -l artifact-manifest
 complete -c vex -l bin
 complete -c vex -l branch
+complete -c vex -l build-dir
+complete -c vex -l depfile
 complete -c vex -l depth
 complete -c vex -l dry-run
 complete -c vex -l features
@@ -23,14 +26,18 @@ complete -c vex -l path
 complete -c vex -l profile
 complete -c vex -l quiet
 complete -c vex -l release
+complete -c vex -l replace
 complete -c vex -l rev
 complete -c vex -l script-fallback
+complete -c vex -l state-dir
+complete -c vex -l std
 complete -c vex -l subdir
 complete -c vex -l tag
 complete -c vex -l target
 complete -c vex -l verbose
 complete -c vex -l version
 complete -c vex -l version-req
+complete -c vex -l wavec
 complete -c vex -l workspace
 complete -c vex -f -a add
 complete -c vex -f -a build
@@ -50,5 +57,6 @@ complete -c vex -f -a remove
 complete -c vex -f -a run
 complete -c vex -f -a setup
 complete -c vex -f -a test
+complete -c vex -f -a toolchain
 complete -c vex -f -a tree
 complete -c vex -f -a update

@@ -5,6 +5,9 @@ platform. Project commands select `--manifest-path` first, otherwise search real
 ancestors from the invocation directory. `init` uses the current directory.
 Builds and user programs execute from the selected project root.
 
+For format 5, external storage, static libraries, pins, depfiles and completed
+results see [external builds](external-builds.md).
+
 ## Manifest
 
 `vex.ws` is a WSON object. Unknown and duplicate fields are errors. Names match
@@ -12,27 +15,31 @@ Builds and user programs execute from the selected project root.
 
 | Field | Type | Default / meaning |
 | --- | --- | --- |
-| `format` | integer 1, 2, or 3 | 1 when absent; generated single-target manifests use 2 |
+| `format` | integer 1–5 | 1 when absent; new manifests use 5 |
 | `name` | string | Required package/import identity |
-| `version` | version literal or string | `0.1.0`; dependency equality is exact |
+| `version` | version literal or string | `0.1.0`; formats 4/5 use SemVer |
 | `lib` | boolean | Formats 1/2 only: false; true selects `src/lib.wave`, otherwise `src/main.wave` |
 | `compiler` | string | Absent means no version requirement; exact canonical wavec version, including prerelease, without build metadata |
 | `description`, `author`, `license` | string | Optional descriptive metadata |
 | `dependencies` | array of objects | Empty when absent |
 | `native` | object | Prebuilt library inputs and search paths; formats 1/2 also declare library output here; see [native interoperability](native-interop.md) |
-| `targets` | object | Required in format 3; optional `lib` and array `bins` declare at least one target |
+| `targets` | object | Required in formats 3–5; optional `lib` and array `bins` declare at least one target |
 | `default_run` | string | Format 3: optional declared binary name |
 | `profiles` | object | Format 3: dev/release overrides and custom profiles inheriting one builtin |
 | `build` | object | Format 3: optional default compiler `target` triple |
 | `target_config` | array of objects | Format 3: exact-triple sysroot/linker and binary platform overrides |
 
 A dependency requires a unique `name` and exactly one nonempty `path` or `git`
-string. Optional `version` is an exact package version assertion, not a range.
+string. Optional `version` is an exact package version assertion. Formats 4/5 additionally
+accept explicit SemVer `version_req`.
 Git alone accepts at most one nonempty `branch`, `tag` or `rev` string. Without a
 selector, initial fetch and explicit update follow the remote default branch;
 locked reuse preserves the exact commit. Path values resolve relative to their
-own declaring manifest. Dependencies must declare libraries. One package name
-cannot identify conflicting sources or versions anywhere in the graph.
+own declaring manifest. Dependencies must declare libraries. Formats 1–3 reject conflicting package sources/versions. Formats 4/5 separate
+import aliases and package IDs, support explicit `package`, SemVer `version_req`,
+Git `subdir`, optional/target dependencies and additive features. A single owner
+cannot activate conflicting bindings for one alias. Cross-package alias
+conflicts require the versioned Wave package-graph capability.
 
 ```wson
 {
@@ -48,7 +55,7 @@ fields, selection, platform restrictions, and migration. Existing formats are
 not automatically rewritten. Library dependencies may declare binaries in format
 3, but consumers only use their library.
 
-Format 1 preserves legacy literal backslashes. Formats 2 and 3 decode `\\`, `\"`,
+Format 1 preserves legacy literal backslashes. Formats 2–5 decode `\\`, `\"`,
 `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and JSON `\uXXXX` sequences;
 unsupported escapes are rejected. A format change is
 explicit: files are never silently reinterpreted. Additive fields may retain a
@@ -58,7 +65,8 @@ and compiler requirement. See [compatibility policy](release-readiness.md).
 
 ## Dependency state
 
-Commit generated `vex.lock`. New writes use v3; compatible v2 stays byte-identical
+Commit generated `vex.lock`. Formats 4/5 write union graph v4; legacy manifests
+retain v3 writes. Compatible v2 stays byte-identical
 under `--locked`. Legacy v1 needs an explicit normal fetch to migrate. Unsupported,
 malformed, conflicting or cyclic locks fail before publication. Git commits are
 exact; path content is not pinned and must be versioned separately.
@@ -121,6 +129,8 @@ reusing a pruned dependency may require network access through `fetch`.
 
 | Variable | Contract |
 | --- | --- |
+| `VEX_BUILD_DIR`, `VEX_STATE_DIR` | External storage defaults; explicit CLI paths take precedence |
+| `VEX_WAVE_STD` | Prepared std root selected before entering the project |
 | `VEX_WAVEC` | Explicit selected compiler; empty is an error; relative paths use invocation directory |
 | `PATH` | Compiler and required system-tool lookup; precedes the managed compiler |
 | `VEX_TOOLCHAIN_HOME` | Managed compiler installation root; default documented in [installation](../README.md#install) |
@@ -166,7 +176,9 @@ start stops Vex; reporting failure after program start warns and preserves the
 program exit. Missing final events mean an incomplete report.
 
 Machine-readable schemas: [metadata v1](schemas/metadata-v1.json),
-[metadata v2](schemas/metadata-v2.json), [build-plan v1](schemas/build-plan-v1.json),
+[metadata v2](schemas/metadata-v2.json), [metadata v3](schemas/metadata-v3.json),
+[build-plan v2](schemas/build-plan-v2.json), [completed artifacts](schemas/artifacts-v1.json),
+[toolchain pins](schemas/toolchain-v1.json),
 [doctor](schemas/doctor-v1.json) and
 [message events](schemas/messages-v1.json). Additive fields are permitted; changed
 existing meanings require a new schema version. There is no registry or publish
@@ -188,7 +200,7 @@ already successful artifacts. General and native output paths are unified under
 `.vex-obj/<kind>/<name>/<output-kind>/`. Old paths are left untouched. Run keeps an
 independent generation, lease and lock-release boundary.
 
-Dry-run stdout is one `vex.build-plan` schema-1 envelope for single or multiple
+Dry-run stdout is one `vex.build-plan` schema-2 envelope for single or multiple
 targets. It contains `target`, `profile: {name, opt_level}`, and ordered `plans`
 entries with `package_target: {name, kind}` and the validated `compiler_plan`.
 It replaces the previous direct compiler-plan output. Planning runs once per

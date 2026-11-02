@@ -67,11 +67,11 @@ pub fn prune(
         .map(|package| {
             let (LockedSource::Path { resolved, .. } | LockedSource::Git { resolved, .. }) =
                 &package.source;
-            let path = root.join(resolved);
+            let path = state::layout::dependency(&root, resolved);
             path.canonicalize().unwrap_or(path)
         })
         .collect();
-    let directory = root.join(".vex/deps");
+    let directory = state::layout::dependency(&root, ".vex/deps");
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

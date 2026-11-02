@@ -10,13 +10,16 @@ fn main() {
     if let Ok(path) = env::var("DOCTOR_LOG") {
         writeln!(OpenOptions::new().create(true).append(true).open(path).unwrap(), "{kind}:{}", args.join(" ")).unwrap();
     }
+    if kind == "curl" {
+        std::process::exit(7);
+    }
     if kind == "git" {
         assert_eq!(args, ["--version"], "doctor must never fetch or access a remote");
         println!("git version 2.48.0"); return;
     }
     if args == ["--version"] {
         assert!(env::var_os("NO_COLOR").is_some());
-        println!("wavec 0.2.1-pre-beta"); return;
+        println!("wavec {}",env::var("DOCTOR_VERSION").unwrap_or_else(|_|"0.2.1-pre-beta".into())); return;
     }
     if args == ["print", "supported-targets", "--format=json"] {
         println!("{}", env::var("DOCTOR_TARGETS").unwrap()); return;
@@ -41,5 +44,6 @@ fn main() {
     let compile = if object {
         format!("[{{\"input\":\"src/lib.wave\",\"kind\":\"wave\",\"output\":{requested_output:?},\"command\":\"wavec\"}}]")
     } else { "[]".into() };
+    let target = env::var("DOCTOR_PLAN_TARGET").unwrap_or(target);
     println!("{{\"schema_version\":{schema},\"mode\":\"build\",\"target\":{target:?},\"emit\":{emit:?},\"emit_kinds\":[],\"control_mode\":null,\"forced_input_type\":null,\"inputs\":[],\"emit_jobs\":[],\"compile\":{compile},\"link\":{link},\"execute\":null}}");
 }

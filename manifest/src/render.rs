@@ -5,9 +5,9 @@
 pub fn render_new_manifest(project_name: &str, author: &str, is_lib: bool) -> String {
     format!(
         r#"{{
-    format = 3,
+    format = 5,
     name = "{name}",
-    version = 0.1.0,
+    version = "0.1.0",
     targets = {targets},
     description = "{name} Project",
     author = "{author}",

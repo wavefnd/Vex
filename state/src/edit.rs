@@ -19,7 +19,7 @@ struct Record {
     committed: bool,
 }
 fn read(root: &Path) -> Result<Option<Record>, String> {
-    let path = root.join(JOURNAL);
+    let path = crate::layout::dependency(root, JOURNAL);
     reject_link(&path)?;
     match fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw)
@@ -60,7 +60,7 @@ pub fn replace(path: &Path, text: &str) -> Result<(), String> {
 }
 fn store(root: &Path, record: &Record) -> Result<(), String> {
     replace(
-        &root.join(JOURNAL),
+        &crate::layout::dependency(root, JOURNAL),
         &serde_json::to_string(record).map_err(|e| e.to_string())?,
     )
 }
@@ -169,6 +169,6 @@ pub fn recover(root: &Path, readonly: bool) -> Result<(), String> {
     } else if manifest != record.new || lock != record.new_lock {
         return Err("committed dependency edit is incomplete; preserve journal".into());
     }
-    fs::remove_file(root.join(JOURNAL)).map_err(|e| e.to_string())?;
-    sync_dir(&root.join(".vex")).map_err(|e| e.to_string())
+    fs::remove_file(crate::layout::dependency(root, JOURNAL)).map_err(|e| e.to_string())?;
+    sync_dir(&crate::layout::dependency(root, ".vex")).map_err(|e| e.to_string())
 }

@@ -1,42 +1,53 @@
+# Authoritative subsystem ownership map. Keep .github/CODEOWNERS in sync.
+
 [CLI and Commands]
 M: LunaStev <luna@lunastev.org>
-F: src/main.rs
-F: src/commands/
-F: src/ui.rs
+F: /src/
 
-[Manifest and Lockfile]
+[Manifest, WSON and Lockfile]
 M: LunaStev <luna@lunastev.org>
-F: src/manifest.rs
-F: src/lockfile.rs
+F: /manifest/
+F: /wson/
+F: /lockfile/
 
 [Dependency Resolution and Git]
 M: LunaStev <luna@lunastev.org>
-F: src/resolver.rs
-F: tests/git_*.rs
+F: /resolver/
+F: /source/
 
-[wavec Integration]
+[Compiler and Toolchain Integration]
 M: LunaStev <luna@lunastev.org>
-F: src/wavec.rs
-F: src/validate.rs
-F: src/commands/build.rs
-F: src/commands/check.rs
-F: src/commands/run.rs
+F: /compiler/
+F: /toolchain/
+F: /process/
+F: /diagnostic/
+
+[Project State and Artifacts]
+M: LunaStev <luna@lunastev.org>
+F: /state/
+
+[Tests and Examples]
+M: LunaStev <luna@lunastev.org>
+F: /tests/
+F: /examples/
 
 [Release and CI]
 M: LunaStev <luna@lunastev.org>
-F: .github/
-F: Cargo.toml
-F: Cargo.lock
-F: meson.build
-F: meson.options
-F: tools/
-F: tests/tooling/
-F: RELEASING.md
+F: /.github/
+F: /Cargo.toml
+F: /Cargo.lock
+F: /rust-toolchain.toml
+F: /meson.build
+F: /meson.options
+F: /platforms.json
+F: /tools/
+F: /RELEASING.md
 
 [Documentation and Community]
 M: LunaStev <luna@lunastev.org>
-F: *.md
-F: MAINTAINERS
-F: COPYRIGHT
-F: NOTICE
-F: ai.txt
+F: /*.md
+F: /docs/
+F: /MAINTAINERS
+F: /COPYRIGHT
+F: /NOTICE
+F: /ai.txt

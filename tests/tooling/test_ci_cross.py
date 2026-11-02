@@ -58,7 +58,7 @@ class CrossAcceptanceTests(unittest.TestCase):
         row = dict(id='linux-riscv64', rust_target='riscv64gc-unknown-linux-gnu',
                    executor='qemu', arch='riscv64')
         pin = dict(version='fixture', archives={row['id']: 'd'*64})
-        report = dict(schema_version=1, executor='qemu', os='Linux',
+        report = dict(schema_version=1, executor='qemu', os='Linux', native_interop=sorted(repository_checks.NATIVE_INTEROP),
                       source='a'*40, platform=row['id'], rust_target=row['rust_target'], status='passed',
                       wave_version='fixture', compiler_sha256='b'*64, wave_archive_digest='sha256:'+'d'*64,
                       build_method='cross', build_host='x86_64-unknown-linux-gnu', execution_arch='riscv64',

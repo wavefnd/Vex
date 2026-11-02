@@ -18,7 +18,8 @@ import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools import ci_cross
+from tools import ci_cross, ci_github_api
+from tools.repository_checks import NATIVE_INTEROP
 PLATFORMS = json.loads((ROOT / 'platforms.json').read_text())['platforms']
 WAVE_PIN = json.loads((ROOT / 'tools/wave-release.json').read_text())
 WAVE_VERSION = WAVE_PIN['version']
@@ -92,7 +93,8 @@ def main():
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            release = json.load(response)
+            release_body = response.read()
+            release = json.loads(release_body)
     except urllib.error.HTTPError as error:
         detail = error.read(4096).decode('utf-8', errors='replace')
         raise RuntimeError(f'cannot query official Wave v{WAVE_VERSION} (HTTP {error.code}): {detail}') from error
@@ -106,6 +108,9 @@ def main():
         env = dict(os.environ, VEX_TOOLCHAIN_HOME=temporary, VEX_WAVEC_ARCHIVE_SHA256=WAVE_PIN['archives'][target['id']])
         env.pop('VEX_WAVEC', None)
         setup_env = dict(env, GH_TOKEN=api_token) if api_token and not cross else env
+        if cross:
+            responses = ci_github_api.snapshots(WAVE_VERSION, WAVE_PIN['archives'][target['id']], release_body, api_token)
+            setup_env = dict(env, VEX_TEST_GUEST_PATH=ci_github_api.write_curl(Path(temporary)/'api-transport', responses))
         execute(binary, 'setup', 'wavec', '--version', WAVE_VERSION, env=setup_env)
         compiler = Path(temporary) / (Path(temporary) / 'current').read_text().strip()
         if cross:
@@ -123,7 +128,7 @@ def main():
                   os=identity['os'], libc=identity['libc'], wave_version=WAVE_VERSION,
                   wave_release_id=release['id'], wave_asset_id=assets[0]['id'],
                   wave_archive_digest='sha256:'+WAVE_PIN['archives'][target['id']], compiler_sha256=compiler_hash,
-                  native_interop=['c', 'cpp-c-abi', 'rust-c-abi', 'wave-object', 'wave-shared'],
+                  native_interop=sorted(NATIVE_INTEROP),
                   status='passed')
     if cross:
         report.update(build_method='cross', build_host=cross['build_host'], execution_arch=identity['machine'],

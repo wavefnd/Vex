@@ -90,11 +90,12 @@ fn main() {
             } else { format!("{{\"program\":{output:?},\"args\":{runtime:?}}}") };
             (link, if mode == "build+run" { execute } else { "null".into() })
         } else { ("null".into(), "null".into()) };
-        println!("{{\"schema_version\":{schema},\"mode\":\"{mode}\",\"target\":\"test-target\",\"emit\":\"{emit}\",\"emit_kinds\":[],\"control_mode\":null,\"forced_input_type\":null,\"inputs\":[],\"emit_jobs\":[],\"compile\":[],\"link\":{link},\"execute\":{execute}}}");
+        let target=args.iter().find_map(|a|a.strip_prefix("--target=")).unwrap_or("test-target");
+        println!("{{\"schema_version\":{schema},\"mode\":\"{mode}\",\"target\":{target:?},\"emit\":\"{emit}\",\"emit_kinds\":[],\"control_mode\":null,\"forced_input_type\":null,\"inputs\":[],\"emit_jobs\":[],\"compile\":[],\"link\":{link},\"execute\":{execute}}}");
     } else {
         assert!(!args.iter().any(|a| a == "--run" || a == "--"));
         checkpoint("COMPILE");
-        if let Some(output) = env::var_os("FAKE_BUILD_OUTPUT").map(PathBuf::from) {
+        if let Some(output) = env::var_os("FAKE_BUILD_OUTPUT").map(|_|explicit_output.clone().unwrap_or_else(||PathBuf::from(env::var_os("FAKE_BUILD_OUTPUT").unwrap()))) {
             fs::create_dir_all(output.parent().unwrap()).unwrap();
             fs::write(output, b"compiled artifact").unwrap();
         }

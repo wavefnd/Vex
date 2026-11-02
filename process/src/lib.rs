@@ -89,20 +89,65 @@ pub fn exit_code(status: ExitStatus) -> i32 {
 }
 
 pub fn output(command: &mut Command, timeout: Duration) -> Result<Output, String> {
-    captured_output(command, Some(timeout))
+    captured_output(command, Some(timeout), None)
 }
 
 pub fn output_without_deadline(command: &mut Command) -> Result<Output, String> {
-    captured_output(command, None)
+    captured_output(command, None, None)
 }
 
-fn captured_output(command: &mut Command, timeout: Option<Duration>) -> Result<Output, String> {
+pub fn output_with_input(
+    command: &mut Command,
+    timeout: Option<Duration>,
+    input: Option<&[u8]>,
+) -> Result<Output, String> {
+    captured_output(command, timeout, input)
+}
+fn write_input(
+    child: &mut Child,
+    input: Option<&[u8]>,
+) -> Option<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    input.map(|input| {
+        let bytes = input.to_vec();
+        let mut stream = child.stdin.take().expect("piped build-contract input");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = tx.send(stream.write_all(&bytes));
+        });
+        rx
+    })
+}
+fn finish_input(
+    input: Option<std::sync::mpsc::Receiver<std::io::Result<()>>>,
+) -> Result<(), String> {
+    if let Some(input) = input {
+        input
+            .recv_timeout(Duration::from_secs(3))
+            .map_err(|_| "compiler input pipe did not close")?
+            .map_err(|e| format!("cannot deliver compiler input: {e}"))?;
+    }
+    Ok(())
+}
+fn captured_output(
+    command: &mut Command,
+    timeout: Option<Duration>,
+    input: Option<&[u8]>,
+) -> Result<Output, String> {
+    if input.is_some_and(|bytes| bytes.len() > OUTPUT_LIMIT) {
+        return Err("compiler input exceeds 8 MiB".into());
+    }
     install_handlers()?;
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let (mut child, group) = spawn(command, false)?;
+    let input = write_input(&mut child, input);
     let overflow = Arc::new(AtomicBool::new(false));
     let reader = |stream: Box<dyn Read + Send>, overflow: Arc<AtomicBool>| {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -142,6 +187,9 @@ fn captured_output(command: &mut Command, timeout: Option<Duration>) -> Result<O
         .map_err(|_| "stderr pipe did not close after child termination")?
         .map_err(|e| e.to_string())?;
     let status = status?;
+    if status.success() {
+        finish_input(input)?;
+    }
     if overflow.load(Ordering::SeqCst) {
         return Err("child output exceeds 8 MiB".into());
     }
@@ -157,9 +205,30 @@ pub fn status(
     timeout: Option<Duration>,
     interactive: bool,
 ) -> Result<ExitStatus, String> {
+    status_with_input(command, timeout, interactive, None)
+}
+pub fn status_with_input(
+    command: &mut Command,
+    timeout: Option<Duration>,
+    interactive: bool,
+    input: Option<&[u8]>,
+) -> Result<ExitStatus, String> {
+    if input.is_some_and(|bytes| bytes.len() > OUTPUT_LIMIT) {
+        return Err("compiler input exceeds 8 MiB".into());
+    }
     install_handlers()?;
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
     let (mut child, group) = spawn(command, interactive)?;
+    let input = write_input(&mut child, input);
     let result = wait(&mut child, &group, timeout, &AtomicBool::new(false));
+    if input.is_some() && !interactive {
+        group.terminate(true);
+    }
+    if result.as_ref().is_ok_and(|s| s.success()) {
+        finish_input(input)?;
+    }
     #[cfg(windows)]
     if interactive && result.is_ok() {
         if let Err(error) = group.preserve_descendants() {
@@ -420,6 +489,11 @@ mod tests {
                     .write_all(&vec![b'x'; OUTPUT_LIMIT + 65536])
                     .unwrap();
             }
+            "read" => {
+                let mut bytes = Vec::new();
+                std::io::stdin().read_to_end(&mut bytes).unwrap();
+                println!("INPUT_COUNT={}", bytes.len());
+            }
             "exit" => std::process::exit(42),
             _ => panic!("unknown fixture"),
         }
@@ -435,6 +509,43 @@ mod tests {
             ])
             .env("VEX_PROCESS_FIXTURE", mode);
         command
+    }
+    #[test]
+    fn bounded_input_is_delivered_and_a_blocked_reader_cannot_hide_timeout_or_exit() {
+        let payload = vec![b'x'; 1024 * 1024];
+        let output = output_with_input(
+            &mut command("read"),
+            Some(Duration::from_secs(10)),
+            Some(&payload),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("INPUT_COUNT=1048576"));
+        let started = Instant::now();
+        let error = output_with_input(
+            &mut command("wait"),
+            Some(Duration::from_millis(100)),
+            Some(&payload),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(6));
+        let output = output_with_input(
+            &mut command("exit"),
+            Some(Duration::from_secs(10)),
+            Some(&payload),
+        )
+        .unwrap();
+        assert_eq!(exit_code(output.status), 42);
+        assert!(output_with_input(
+            &mut command("read"),
+            Some(Duration::from_secs(10)),
+            Some(&vec![0; OUTPUT_LIMIT + 1])
+        )
+        .unwrap_err()
+        .contains("8 MiB"));
     }
     #[test]
     fn output_limit_and_timeout_terminate_children() {

@@ -11,11 +11,17 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
 def run(command, cwd, env, *, succeeds=True):
-    result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
+    # CI may redirect stdout through a legacy Windows code page. Keep both
+    # decoding and replayed diagnostic bytes UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
+    result = subprocess.run(command, cwd=cwd, env=env, text=True, encoding="utf-8", capture_output=True)
     print(f"$ {' '.join(map(str, command))}", flush=True)
     print(result.stdout, end="", flush=True)
     print(result.stderr, end="", flush=True)
@@ -63,7 +69,7 @@ def target_profile_smoke(vex, root, env, host_target):
     planned = run([vex, "build", "--profile", "fast", "--dry-run", "--locked", "--offline"], app, env)
     envelope = json.loads(planned.stdout)
     plans = envelope.get("plans", [])
-    if (envelope.get("schema") != "vex.build-plan" or envelope.get("schema_version") != 1
+    if (envelope.get("schema") != "vex.build-plan" or envelope.get("schema_version") != 2
             or envelope.get("target") != host_target
             or envelope.get("profile") != {"name": "fast", "opt_level": 3}
             or [item["package_target"] for item in plans] != [
@@ -273,7 +279,7 @@ def main():
         for command in ("build", "check", "run"):
             result = run([vex, command, "--dry-run", "--locked", "--offline"], nested, env)
             plan = json.loads(result.stdout)
-            if plan["schema_version"] != 1 or plan["target"] not in targets:
+            if plan["schema_version"] != 2 or plan["target"] not in targets:
                 raise RuntimeError("compiler plan disagrees with capabilities")
             if command == "build":
                 host_target = plan["target"]
@@ -340,10 +346,10 @@ def main():
             raise RuntimeError("run did not report its artifact and executable")
         if events[-1]["origin"] != "program" or events[-1]["exit_code"] != 0:
             raise RuntimeError("runtime outcome was not preserved")
-        metadata = run([vex, "metadata", "--locked", "--offline"], nested, env)
+        metadata = run([vex, "metadata", "--format-version", "3", "--locked", "--offline"], nested, env)
         graph = json.loads(metadata.stdout)
-        repeated = run([vex, "--manifest-path", str(app / "vex.ws"), "metadata"], root, env)
-        if metadata.stdout != repeated.stdout or graph["schema_version"] != 1:
+        repeated = run([vex, "--manifest-path", str(app / "vex.ws"), "metadata", "--format-version", "3"], root, env)
+        if metadata.stdout != repeated.stdout or graph["schema_version"] != 3:
             raise RuntimeError("metadata changed with project-selection method")
         if graph["root"]["dependencies"] != ["middle"] or [p["name"] for p in graph["packages"]] != ["leaf", "middle"]:
             raise RuntimeError("metadata omitted the transitive graph")

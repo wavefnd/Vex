@@ -69,7 +69,7 @@ if get_option('test_target') != ''
     test_args = ['--target', get_option('test_target')]
 endif
 python_tests = ['-m', 'unittest', 'discover', '-s', 'tests/tooling', '-v']
-rust_tests = cargo + ['test', '--workspace', '--locked'] + test_args
+rust_tests = cargo + ['test', '--workspace', '--locked', '--no-fail-fast'] + test_args
 test(
     'tooling',
     python,
@@ -82,17 +82,13 @@ test(
 test(
     'rust',
     python,
-    args: [files('tools/automation_step.py')[0].full_path(), '--'] + cargo + [
-        'test',
-        '--workspace',
-        '--locked',
-    ] + test_args,
+    args: [files('tools/automation_step.py')[0].full_path(), '--'] + rust_tests,
     workdir: meson.project_source_root(),
     suite: 'rust',
     timeout: 7200,
     is_parallel: false,
 )
-custom_target(
+debug_build = custom_target(
     'build-debug',
     output: 'build-debug.stamp',
     command: step_runner + cargo + ['build', '--workspace', '--locked'],
@@ -344,3 +340,23 @@ summary(
         'development unverified packaging': get_option('allow_unverified'),
     },
 )
+
+# Supplemental development acceptance; this never substitutes for the pinned
+# public compiler or the nine mandatory platform/release lanes.
+if get_option('contract_wavec') != '' and get_option('contract_std') != ''
+    run_target(
+        'consumer-acceptance',
+        command: [
+            python,
+            files('tests/external_builds.py'),
+            '--vex',
+            meson.project_source_root() / (host_machine.system() == 'windows' ? 'target/debug/vex.exe' : 'target/debug/vex'),
+            '--wavec',
+            get_option('contract_wavec'),
+            '--std',
+            get_option('contract_std'),
+            '--cross-formats',
+        ],
+        depends: debug_build,
+    )
+endif

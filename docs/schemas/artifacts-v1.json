@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vex completed artifacts v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "results"
+  ],
+  "properties": {
+    "schema": {
+      "const": "vex.artifacts"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "generation",
+          "metadata",
+          "provenance",
+          "artifacts"
+        ],
+        "properties": {
+          "schema": {
+            "const": "vex.artifact-generation"
+          },
+          "schema_version": {
+            "const": 1
+          },
+          "generation": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "required": [
+              "package",
+              "package_target",
+              "target",
+              "profile",
+              "features",
+              "settings",
+              "compiler",
+              "inputs"
+            ]
+          },
+          "provenance": {
+            "type": "object"
+          },
+          "artifacts": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "role",
+                "path",
+                "published_path",
+                "sha256"
+              ],
+              "properties": {
+                "role": {
+                  "enum": [
+                    "primary",
+                    "intermediate",
+                    "debug",
+                    "import_library"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "published_path": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

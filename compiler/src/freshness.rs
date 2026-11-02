@@ -75,6 +75,7 @@ fn tree(hash: &mut Sha256, path: &Path, sources: bool) -> Result<(), String> {
             || path.extension().is_some_and(|e| e == "wave")
             || name == "vex.ws"
             || name == "vex.lock"
+            || name == "vex.toolchain.lock"
         {
             file(hash, &path)?;
         }
@@ -90,7 +91,9 @@ impl Inputs {
         sources.sort();
         sources.dedup();
         let output = process::output(
-            Command::new(compiler.path()).args(["print", "std-path", "--format=json"]),
+            compiler
+                .command()
+                .args(["print", "std-path", "--format=json"]),
             Duration::from_secs(60),
         )?;
         if !output.status.success() {
@@ -203,6 +206,11 @@ pub(crate) fn key(
 ) -> Result<String, String> {
     if !plan["sysroot"].is_null() {
         return Err("SDK/sysroot contents are not fully declared".into());
+    }
+    if !plan["vex_archive"].is_null() {
+        return Err(
+            "archiver runtime closure is not fully declared; compile conservatively".into(),
+        );
     }
     let mut hash = Sha256::new();
     bytes(&mut hash, base.as_bytes());

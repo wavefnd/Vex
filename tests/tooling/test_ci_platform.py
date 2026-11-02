@@ -46,11 +46,22 @@ class PlatformAcceptanceTests(unittest.TestCase):
                 self.assertNotIn('GITHUB_TOKEN', env)
             if len(command) > 1 and command[0] != 'meson' and command[1] == 'setup':
                 home = Path(env['VEX_TOOLCHAIN_HOME'])
+                self.assertIn('VEX_TEST_GUEST_PATH', env)
+                self.assertTrue((home/'api-transport/curl').is_file())
+                snapshots = (home/'api-transport/responses.json').read_text()
+                self.assertNotIn('host-api-secret', snapshots)
+                self.assertNotIn('never-forward', snapshots)
                 (home/'current').write_text('wavec')
                 (home/'wavec').write_bytes(b'compiler fixture')
 
         release = dict(draft=False, tag_name='v'+ci.WAVE_VERSION, id=1,
                        assets=[dict(id=2, name=f'wave-v{ci.WAVE_VERSION}-{target["wave_target"]}.tar.gz')])
+        def public_response(request, timeout):
+            body = release if '/releases/' in request.full_url else {'attestations': []}
+            response = io.BytesIO(json.dumps(body).encode())
+            response.status = 200
+            return response
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root/'dist').mkdir()
@@ -63,7 +74,7 @@ class PlatformAcceptanceTests(unittest.TestCase):
                   patch.object(ci.ci_cross, 'check_elf') as check_elf,
                   patch.object(ci.ci_cross, 'execution_identity', return_value=dict(os='QEMU Linux', libc=['glibc', '2.41'], machine='riscv64')),
                   patch.object(ci.ci_cross, 'run_target', side_effect=guest_run),
-                  patch.object(ci.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(release).encode())) as request):
+                  patch.object(ci.urllib.request, 'urlopen', side_effect=public_response) as request):
                 ci.main()
             setup = next(args for args, _ in native if args[:2] == ('meson', 'setup'))
             self.assertIn('-Dcargo=cargo', setup)
@@ -80,6 +91,9 @@ class PlatformAcceptanceTests(unittest.TestCase):
             self.assertEqual(Path(interop['VEX_TEST_TARGET_RUNNER']), Path('/cross/tools')/'runner')
             self.assertTrue(any(command[:2] == ('meson', 'test') and 'tooling' in command for command, _ in guest))
             self.assertTrue(any(command[:2] == ('meson', 'compile') and command[-1] == 'package' for command, _ in guest))
+            for command, environment in guest:
+                if environment and not (len(command) > 1 and command[1] == 'setup'):
+                    self.assertNotIn('VEX_TEST_GUEST_PATH', environment)
             for script in ['tools/cli_reference.py', 'tests/wave_compatibility.py']:
                 self.assertTrue(any(len(command) > 1 and command[1] == script for command, _ in guest))
             self.assertFalse(any(command[0] in ['cargo', 'rustc'] for command, _ in guest))

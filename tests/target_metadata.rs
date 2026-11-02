@@ -222,7 +222,7 @@ fn format_version_options_fail_before_project_discovery() {
     let f = Fixture::new();
     for args in [
         vec!["metadata", "--format-version"],
-        vec!["metadata", "--format-version", "3"],
+        vec!["metadata", "--format-version", "4"],
         vec!["metadata", "--format-version=0"],
         vec!["metadata", "--format-version", "2", "--format-version=2"],
     ] {

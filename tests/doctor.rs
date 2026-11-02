@@ -55,6 +55,16 @@ impl Fixture {
                 "{ version = 3, package = [] }\n",
             )
             .unwrap();
+            let prepared = self
+                .command()
+                .args(["fetch", "--offline"])
+                .output()
+                .unwrap();
+            assert!(
+                prepared.status.success(),
+                "{}",
+                String::from_utf8_lossy(&prepared.stderr)
+            );
         }
     }
     fn command(&self) -> Command {
@@ -559,4 +569,144 @@ fn every_declared_entry_is_validated_before_doctor_plans_any_target() {
     assert_eq!(check(&report, "dry_run")["status"], "not_checked");
     assert!(!f.calls().lines().any(|call| call.contains(" build ")));
     assert_eq!(before, snapshot(&f.work));
+}
+
+#[test]
+fn malformed_version_tokens_are_compiler_errors() {
+    let f = Fixture::new();
+    for version in ["banana", "1.2", "01.2.3"] {
+        let out = f
+            .command()
+            .env("DOCTOR_VERSION", version)
+            .args(["doctor", "--format=json"])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    for version in ["0.2.1-pre-beta-dev", "0.2.1+development"] {
+        let out = f
+            .command()
+            .env("DOCTOR_VERSION", version)
+            .args(["doctor", "--format=json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn an_explicit_plan_target_mismatch_fails_without_compilation() {
+    let f = Fixture::new();
+    f.project(true);
+    for args in [
+        vec!["build", "--dry-run", "--target", "doctor-cross-target"],
+        vec!["build", "--dry-run", "--target=doctor-cross-target"],
+        vec!["doctor", "--format=json", "--target", "doctor-cross-target"],
+    ] {
+        let out = f
+            .command()
+            .env("DOCTOR_PLAN_TARGET", host_target())
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("target mismatch")
+                || String::from_utf8_lossy(&out.stdout).contains("target mismatch")
+        );
+    }
+}
+#[cfg(unix)]
+#[test]
+fn path_lookup_skips_nonexecutables_but_explicit_selection_is_preserved() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let bad = f.root.join("bad-path");
+    fs::create_dir(&bad).unwrap();
+    let file = bad.join("wavec");
+    fs::write(&file, "not executable").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    let path = std::env::join_paths([bad.as_path(), f.bin.as_path()]).unwrap();
+    let output = f
+        .command()
+        .env_remove("VEX_WAVEC")
+        .env("PATH", &path)
+        .args(["doctor", "--format=json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let explicit = f
+        .command()
+        .env("VEX_WAVEC", file)
+        .env("PATH", path)
+        .args(["doctor", "--format=json"])
+        .output()
+        .unwrap();
+    assert_eq!(explicit.status.code(), Some(5));
+}
+#[test]
+fn quiet_setup_suppresses_installation_progress_on_failure() {
+    let f = Fixture::new();
+    // Windows searches the application directory before System32 and PATH.
+    // Keep the installer beside its stub so the system curl cannot be used.
+    let vex = f.bin.join(exe("vex"));
+    fs::copy(env!("CARGO_BIN_EXE_vex"), &vex).unwrap();
+    fs::copy(fake(), f.bin.join(exe("curl"))).unwrap();
+    let toolchain = f.root.join("toolchain");
+    for quiet in [false, true] {
+        let mut command = Command::new(&vex);
+        command
+            .current_dir(&f.work)
+            .env("PATH", &f.bin)
+            .env("DOCTOR_LOG", f.root.join("calls.log"))
+            .env("VEX_TOOLCHAIN_HOME", &toolchain)
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN");
+        if quiet {
+            command.arg("--quiet");
+        }
+        let output = command
+            .args(["setup", "wavec", "--version", "0.2.1-pre-beta"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(5), "{stderr}");
+        assert!(
+            stderr.contains("could not query compiler GitHub API"),
+            "{stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(stderr.contains("Installing"), !quiet);
+        assert!(!toolchain.exists());
+    }
+    let calls = f.calls();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("curl:"))
+            .count(),
+        2,
+        "{calls}"
+    );
 }

@@ -783,3 +783,24 @@ fn init_reports_ignore_creation_only_when_created() {
         }
     }
 }
+
+#[test]
+fn format_five_init_is_ready_for_immediate_locked_offline_use() {
+    let fixture = TestDir::new();
+    let project = fixture.0.join("new_package");
+    fs::create_dir(&project).unwrap();
+    assert_success(&vex(&project, &["init", "--lib"]), "new format 5 library");
+    assert!(fs::read_to_string(project.join("vex.ws"))
+        .unwrap()
+        .contains("format = 5"));
+    let bytes = fs::read(project.join("vex.lock")).unwrap();
+    let lock = lockfile::decode(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert_eq!(lock.version, 4);
+    assert_eq!(lock.roots.len(), 1);
+    assert_eq!(lock.roots[0].name, "new_package");
+    assert_success(
+        &vex(&project, &["fetch", "--locked", "--offline"]),
+        "immediate prepared lock reuse",
+    );
+    assert_eq!(fs::read(project.join("vex.lock")).unwrap(), bytes);
+}

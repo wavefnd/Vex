@@ -1,5 +1,5 @@
 {
-  "globals": "[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests]",
+  "globals": "[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] [--build-dir <path>] [--state-dir <path>]",
   "commands": [
     {
       "name": "init",
@@ -8,12 +8,12 @@
     },
     {
       "name": "build",
-      "usage": "build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]",
+      "usage": "build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>]",
       "description": "Compile selected package targets"
     },
     {
       "name": "run",
-      "usage": "run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]",
+      "usage": "run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]",
       "description": "Compile and execute one binary"
     },
     {
@@ -23,7 +23,7 @@
     },
     {
       "name": "test",
-      "usage": "test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]",
+      "usage": "test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]",
       "description": "Compile and execute explicit main-based tests; run every selected test and return the first failure"
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "name": "metadata",
-      "usage": "metadata [--format=json] [--format-version <1|2>] [--locked] [--offline] [--target <triple>]",
+      "usage": "metadata [--format=json] [--format-version <1|2|3>] [--locked] [--offline] [--target <triple>]",
       "description": "Manage metadata"
     },
     {
@@ -100,6 +100,11 @@
       "name": "manpage",
       "usage": "manpage",
       "description": "Print the vex(1) manual"
+    },
+    {
+      "name": "toolchain",
+      "usage": "toolchain capture [--wavec <path>] [--std <path>] [--replace]",
+      "description": "Record a prepared host compiler/std pair by content identity; never downloads a toolchain."
     }
   ]
 }

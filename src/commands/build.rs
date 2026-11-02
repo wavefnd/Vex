@@ -33,6 +33,8 @@ struct VexBuildOptions {
     dry_run: bool,
     locked: bool,
     offline: bool,
+    artifact_manifest: Option<PathBuf>,
+    depfile: Option<PathBuf>,
 }
 
 pub fn build(
@@ -46,9 +48,34 @@ pub fn build(
         diagnostic::outln!("{}", build_usage(mode));
         return Ok(Outcome::success());
     }
-    let options = parse_vex_build_options(mode, args).map_err(Error::usage)?;
+    let mut options = parse_vex_build_options(mode, args).map_err(Error::usage)?;
+    let invocation = std::env::current_dir().map_err(Error::environment)?;
+    for path in [&mut options.artifact_manifest, &mut options.depfile]
+        .into_iter()
+        .flatten()
+    {
+        *path = compiler::reports::destination(&invocation.join(&*path))?;
+    }
+    if mode == BuildMode::Check
+        && (options.artifact_manifest.is_some() || options.depfile.is_some())
+    {
+        return Err(Error::usage(
+            "check does not emit artifacts; use build for artifact manifests or depfiles",
+        ));
+    }
     let compiler = Compiler::select();
     let _project = selection.enter()?;
+    let project_root = std::env::current_dir().map_err(Error::environment)?;
+    let build_root = state::layout::build_root(&project_root);
+    let paths = options
+        .depfile
+        .iter()
+        .chain(options.artifact_manifest.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    if !build_root.join(".vex/report-publication.json").exists() {
+        compiler::reports::preflight(&build_root, &paths)?;
+    }
     run_build(
         mode,
         &_project.selected,
@@ -171,6 +198,16 @@ fn run_build(
     let primary = &members[0].manifest;
     let mut selected_compiler = compiler?;
     let compiler = &mut selected_compiler;
+    compiler.validate_identity(&root)?;
+    if options.artifact_manifest.is_some() || options.depfile.is_some() {
+        if compiler
+            .capabilities()?
+            .is_none_or(|c| c["source_inputs"] != 1)
+        {
+            return Err(Error::compiler("consumer reports require Wave's complete source-input capability; select a compatible compiler"));
+        }
+        compiler.observe_identity()?;
+    }
     let requested_triple = options
         .target
         .as_deref()
@@ -181,9 +218,11 @@ fn run_build(
     for member in &members {
         compiler.validate_version(member.manifest.compiler.as_deref())?;
     }
+    let prepared_read = state::layout::external(&root) && options.locked && options.offline;
+    let resolution_readonly = options.dry_run || prepared_read;
     let recovery_guard =
-        state::Guard::acquire(options.dry_run, ui::status).map_err(Error::environment)?;
-    resolver::recover_project(&recovery_guard, options.dry_run)?;
+        state::Guard::acquire(resolution_readonly, ui::status).map_err(Error::environment)?;
+    resolver::recover_project(&recovery_guard, resolution_readonly)?;
     drop(recovery_guard);
     let spec = compiler.target_spec(requested_triple)?;
     let triple = spec["triple"].as_str().unwrap().to_owned();
@@ -207,7 +246,7 @@ fn run_build(
         ResolveOptions {
             requests,
             selection: graph_selection.clone(),
-            dry_run: options.dry_run,
+            dry_run: resolution_readonly,
             update: UpdatePolicy::ReuseLocked,
             locked: options.locked,
             offline: options.offline,
@@ -231,21 +270,52 @@ fn run_build(
             "bare WebAssembly has no process argument ABI; use a WASI target for program arguments",
         ));
     }
+    let _build_guard = if !options.dry_run {
+        state::layout::prepare_build(&root).map_err(Error::environment)?;
+        let build_root = state::layout::build_root(&root);
+        let lock = state::FileGuard::exclusive(&build_root.join(".vex/build.lock"), || {
+            ui::status("Waiting", "build directory")
+        })
+        .map_err(Error::environment)?;
+        compiler::publication::recover(&build_root, false)?;
+        compiler::reports::recover(&build_root, false)?;
+        compiler::reports::preflight(
+            &build_root,
+            &options
+                .depfile
+                .iter()
+                .chain(options.artifact_manifest.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
+        Some(lock)
+    } else {
+        compiler::publication::recover(&state::layout::build_root(&root), true)?;
+        compiler::reports::recover(&state::layout::build_root(&root), true)?;
+        None
+    };
     let mut run_lease = None;
     let generation = if matches!(mode, BuildMode::Run | BuildMode::Test) {
         Some(if options.dry_run {
-            PathBuf::from("target/.vex-run/planned")
+            state::layout::output(&root, "target/.vex-run/planned")
         } else {
             let path = compiler::create_run_generation()?;
-            run_lease =
-                Some(state::artifacts::RunLease::create(&root, &path).map_err(Error::environment)?);
+            run_lease = Some(
+                state::artifacts::RunLease::create(&state::layout::build_root(&root), &path)
+                    .map_err(Error::environment)?,
+            );
             path
         })
     } else {
         None
     };
     let mut prepared = Vec::new();
+    let mut report_inputs = Vec::new();
     let reporting = messages.enabled();
+    if !options.dry_run {
+        state::layout::prepare_build(&std::env::current_dir().map_err(Error::environment)?)
+            .map_err(Error::environment)?;
+    }
     messages.status("compiler")?;
     for member in &members {
         let profile = member
@@ -268,6 +338,38 @@ fn run_build(
             }
             selection.target = Some(context);
             resolution.activate_root(&member.manifest.source_path, &selection)?;
+            let scoped = resolution.requires_package_graph() || member.manifest.reproducible;
+            compiler.package_graph(if scoped {
+                Some(resolution.compiler_package_graph()?)
+            } else {
+                None
+            })?;
+            if member.manifest.reproducible {
+                // Strict guarantees currently cover compiler-owned object/static
+                // output; arbitrary external SDK/linker closure is not pinned.
+                if target.output.is_none_or(|o| {
+                    !matches!(
+                        o,
+                        manifest::NativeOutput::Object | manifest::NativeOutput::Static
+                    )
+                }) {
+                    return Err(Error::resolution(
+                        "strict reproducibility currently requires object or static library output",
+                    ));
+                }
+                compiler.observe_identity()?;
+                let mut mappings = Vec::new();
+                if let Some(standard) = compiler.selected_standard() {
+                    mappings.push((standard.to_owned(), "/vex/std".into()));
+                }
+                let build_root = state::layout::build_root(&root);
+                if build_root != root {
+                    mappings.push((build_root, "/vex/build".into()));
+                }
+                compiler.path_remappings(mappings)?;
+            } else {
+                compiler.path_remappings(Vec::new())?;
+            }
             let configuration = crate::native::prepare_target(
                 &member.manifest,
                 target,
@@ -278,8 +380,12 @@ fn run_build(
                 mode == BuildMode::Check,
                 generation.as_deref(),
             )?;
-            let mut args = resolution.dependency_args()?;
-            if target.kind == TargetKind::Binary && member.manifest.lib {
+            let mut args = if scoped {
+                Vec::new()
+            } else {
+                resolution.dependency_args()?
+            };
+            if !scoped && target.kind == TargetKind::Binary && member.manifest.lib {
                 args.push(format!(
                     "--dep={}={}",
                     member.manifest.name,
@@ -314,6 +420,87 @@ fn run_build(
                 if reporting { Some(&mut report) } else { None },
             )
             .map_err(|e| target_error(e, target, profile_name))?;
+            if member.manifest.reproducible
+                && (!plan.plan()["sysroot"].is_null() || !plan.plan()["link"].is_null())
+            {
+                return Err(Error::resolution("strict reproducibility cannot verify external SDK or linker inputs for this plan"));
+            }
+            let mut native_requirements = configuration.requirements.clone();
+            let archive_program = configuration.archive.as_ref().map(|a| a.program.clone());
+            let id = resolution
+                .root_records()
+                .iter()
+                .find(|r| r.name == member.manifest.name)
+                .map(resolver::root_identity);
+            let source_graph = resolution.compiler_package_graph()?;
+            for requirement in &mut native_requirements {
+                let owner = Path::new(requirement["manifest"].as_str().unwrap())
+                    .parent()
+                    .unwrap()
+                    .canonicalize()
+                    .map_err(Error::environment)?;
+                requirement["package_id"] = source_graph["packages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|node| {
+                        node["root"].as_str().is_some_and(|p| {
+                            state::layout::path_form(Path::new(p))
+                                == state::layout::path_form(&owner)
+                        })
+                    })
+                    .map(|node| node["id"].clone())
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            let mut settings = configuration.settings;
+            settings["native"] = crate::native::configuration(&member.manifest);
+            settings["reproducible"] = json!(member.manifest.reproducible);
+            let plan=plan.with_archive(configuration.archive).with_metadata(json!({
+                "native_requirements":native_requirements,"source_roots":source_graph["packages"],
+                "package":{"id":id,"name":member.manifest.name,"version":member.manifest.version},
+                "package_target":{"name":target.name,"kind":target.kind.as_str()},
+                "profile":{"name":profile_name,"opt_level":profile.opt_level},"target":triple,
+                "artifact_kind":target.output.map(|v|v.as_str()).unwrap_or("binary"),
+                "features":resolution.selected_features(),"settings":settings
+            }));
+            let manifests = std::iter::once(member.manifest.source_path.clone())
+                .chain(
+                    resolution
+                        .packages()
+                        .iter()
+                        .map(|p| root.join(p.directory()).join("vex.ws")),
+                )
+                .collect::<Vec<_>>();
+            let plan = if !options.dry_run {
+                let mut inputs =
+                    compiler::provenance::Inputs::capture(plan.plan(), &manifests, &root)?;
+                inputs.include_files(
+                    native_requirements
+                        .iter()
+                        .filter_map(|r| r["resolved_path"].as_str().map(PathBuf::from)),
+                )?;
+                if compiler.path().to_str().is_some() {
+                    inputs.include_toolchain(compiler, archive_program.as_deref())?;
+                } else if options.artifact_manifest.is_some()
+                    || options.depfile.is_some()
+                    || member.manifest.reproducible
+                {
+                    return Err(Error::resolution(
+                        "consumer report JSON cannot represent a non-UTF-8 compiler path",
+                    ));
+                }
+                if (options.artifact_manifest.is_some() || options.depfile.is_some())
+                    && !inputs.complete_sources
+                {
+                    return Err(Error::compiler(
+                        "compiler omitted complete source inputs from its plan",
+                    ));
+                }
+                report_inputs.push(inputs.clone());
+                plan.with_inputs(inputs)?
+            } else {
+                plan
+            };
             prepared.push(PlannedTarget {
                 package: member.manifest.name.clone(),
                 manifest_path: member.manifest.source_path.clone(),
@@ -327,10 +514,11 @@ fn run_build(
         .iter()
         .flat_map(|p| p.plan.output_paths().cloned())
         .collect::<Vec<_>>();
-    state::artifacts::validate_output_paths(&root, &paths).map_err(Error::compiler)?;
+    state::artifacts::validate_output_paths(&state::layout::build_root(&root), &paths)
+        .map_err(Error::compiler)?;
     if options.dry_run {
         ui::verbose("freshness: planning only; compiler will not execute");
-        let plans = prepared.iter().map(|task| json!({"package":task.package,"manifest_path":task.manifest_path,"build_directory":root,"run_directory":if matches!(mode, BuildMode::Run|BuildMode::Test) { Some(&task.directory) } else { None },"package_target":{"name":task.target.name,"kind":task.target.kind.as_str()},"compiler_plan":task.plan.plan()})).collect::<Vec<_>>();
+        let plans = prepared.iter().map(|task| json!({"package":task.package,"manifest_path":task.manifest_path,"project_directory":root,"build_directory":state::layout::build_root(&root),"run_directory":if matches!(mode, BuildMode::Run|BuildMode::Test) { Some(&task.directory) } else { None },"package_target":{"name":task.target.name,"kind":task.target.kind.as_str()},"settings":task.plan.metadata()["settings"],"compiler_plan":task.plan.plan()})).collect::<Vec<_>>();
         for task in &prepared {
             ui::status(
                 "Planning",
@@ -343,7 +531,7 @@ fn run_build(
             );
         }
         let profile = primary.profile(profile_name).map_err(Error::resolution)?;
-        diagnostic::outln!("{}", serde_json::to_string_pretty(&json!({"schema":"vex.build-plan","schema_version":1,"target":triple,"profile":{"name":profile_name,"opt_level":profile.opt_level},"plans":plans})).map_err(Error::internal)?);
+        diagnostic::outln!("{}", serde_json::to_string_pretty(&json!({"schema":"vex.build-plan","schema_version":2,"target":triple,"profile":{"name":profile_name,"opt_level":profile.opt_level},"toolchain":compiler.identity(),"reports":{"artifact_manifest":options.artifact_manifest,"depfile":options.depfile},"plans":plans})).map_err(Error::internal)?);
         return Ok(Outcome::success());
     }
     for task in &prepared {
@@ -371,6 +559,7 @@ fn run_build(
     };
     match &freshness {Ok(_)=>ui::verbose("freshness: source, dependency, compiler runtime and standard library contents fingerprinted"), Err(reason)=>ui::verbose(format!("freshness: compiling; {reason}"))};
     let mut executions = Vec::new();
+    let mut artifact_results = Vec::new();
     for mut task in prepared {
         if let Ok((inputs, base)) = &freshness {
             let (plan, status) = task.plan.with_fingerprint(base, inputs);
@@ -393,7 +582,9 @@ fn run_build(
                 task.target.name
             ),
         );
-        let final_paths = if let Some(path) = task.plan.plan()["link"]["output"].as_str() {
+        let final_paths = if let Some(path) = task.plan.plan()["vex_archive"]["output"].as_str() {
+            vec![path.to_owned()]
+        } else if let Some(path) = task.plan.plan()["link"]["output"].as_str() {
             vec![path.to_owned()]
         } else {
             task.plan.plan()["compile"]
@@ -414,6 +605,7 @@ fn run_build(
             }
             messages.emit(event)
         };
+        let result_key = task.plan.result_key()?;
         let execution = task
             .plan
             .execute_reported(
@@ -423,6 +615,12 @@ fn run_build(
             )
             .map_err(|e| target_error(e, &task.target, profile_name))?
             .map(|execution| execution.in_directory(&task.directory));
+        if mode != BuildMode::Check {
+            artifact_results.push(compiler::reports::load_result(
+                &state::layout::build_root(&root),
+                &result_key,
+            )?);
+        }
         if let Some(execution) = execution {
             executions.push((task.package.clone(), task.target.name.clone(), execution));
         }
@@ -430,7 +628,32 @@ fn run_build(
             ui::status("Artifact", path);
         }
     }
+    let mut consumer_files = Vec::new();
+    if let Some(path) = &options.depfile {
+        let targets = if let Some(path) = &options.artifact_manifest {
+            vec![path.clone()]
+        } else {
+            artifact_results
+                .iter()
+                .flat_map(|r| r["artifacts"].as_array().into_iter().flatten())
+                .filter(|a| a["role"] == "primary")
+                .filter_map(|a| a["published_path"].as_str().map(PathBuf::from))
+                .collect()
+        };
+        consumer_files.push((
+            path.clone(),
+            compiler::provenance::depfile(&targets, &report_inputs)?,
+        ));
+    }
+    if let Some(path) = &options.artifact_manifest {
+        let value = json!({"schema":"vex.artifacts","schema_version":1,"results":artifact_results});
+        let mut text = serde_json::to_string_pretty(&value).map_err(Error::internal)?;
+        text.push('\n');
+        consumer_files.push((path.clone(), text));
+    }
+    compiler::reports::publish(&state::layout::build_root(&root), &consumer_files)?;
     drop(resolution);
+    drop(_build_guard);
     let mut outcome = Outcome::success();
     for (package, name, execution) in executions {
         ui::status(
@@ -615,6 +838,22 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
                 }
                 set_target(&mut options, &args[i])?;
             }
+            "--artifact-manifest" | "--depfile" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .ok_or_else(|| format!("missing value for {token}"))?;
+                let slot = if token == "--artifact-manifest" {
+                    &mut options.artifact_manifest
+                } else {
+                    &mut options.depfile
+                };
+                if slot.is_some() {
+                    return Err(format!("duplicate {token}"));
+                }
+                *slot = Some(value.into());
+            }
             "--release" => {
                 if options.release {
                     return Err("--release may only be specified once".into());
@@ -644,7 +883,7 @@ fn parse_vex_build_options(mode: BuildMode, args: &[String]) -> Result<VexBuildO
             "--offline" => options.offline = true,
             "-h" | "--help" => return Err(build_usage(mode).to_string()),
             _ if token.starts_with("--target=") => {
-                set_target(&mut options, token.trim_start_matches("--target="))?;
+                set_target(&mut options, token.strip_prefix("--target=").unwrap())?;
             }
             _ if token.starts_with('-') => {
                 return Err(format!(
@@ -724,12 +963,12 @@ fn set_target(options: &mut VexBuildOptions, target: &str) -> Result<(), String>
 
 fn build_usage(mode: BuildMode) -> &'static str {
     match mode {
-        BuildMode::Test => "usage: vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]",
+        BuildMode::Test => "usage: vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]",
         BuildMode::Build => {
-            "usage: vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name> | --release] [--dry-run] [--locked] [--offline]"
+            "usage: vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name> | --release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>]"
         }
         BuildMode::Run => {
-            "usage: vex run [--bin <name>] [--target <triple>] [--profile <name> | --release] [--dry-run] [--locked] [--offline] [-- <args...>]"
+            "usage: vex run [--bin <name>] [--target <triple>] [--profile <name> | --release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]"
         }
         BuildMode::Check => {
             "usage: vex check [--lib] [--bin <name>] [--target <triple>] [--profile <name> | --release] [--dry-run] [--locked] [--offline]"

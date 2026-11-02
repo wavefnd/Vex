@@ -47,7 +47,10 @@ pub fn setup(args: &[String]) -> Result<(), Error> {
             }
         }
     }
-    diagnostic::outln!("installing wavec {}", toolchain::requested_version(version));
+    crate::ui::status(
+        "Installing",
+        format!("wavec {}", toolchain::requested_version(version)),
+    );
     match toolchain::install_wavec(version) {
         Ok(binary) => diagnostic::outln!("wavec installed at {}", binary.display()),
         Err(error) if script_fallback && !process::cancelled() => {

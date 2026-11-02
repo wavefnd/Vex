@@ -69,9 +69,13 @@ pub struct PlatformSettings {
     pub entry: Option<String>,
     pub startup: Option<Startup>,
     pub linker_script: Option<PathBuf>,
+    pub relocation: Option<String>,
 }
 impl PlatformSettings {
     pub(crate) fn overlay(&mut self, other: &Self) {
+        if other.relocation.is_some() {
+            self.relocation.clone_from(&other.relocation);
+        }
         if other.mode.is_some() {
             self.mode = other.mode;
         }
@@ -97,6 +101,8 @@ pub struct TargetConfig {
     pub sysroot: Option<PathBuf>,
     pub linker: Option<String>,
     pub bins: Vec<BinaryOverride>,
+    pub library: Option<PlatformSettings>,
+    pub archiver: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BinaryOverride {
@@ -143,15 +149,54 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
     let mut targets = Vec::new();
     if let Some(value) = target_object.get("lib") {
         let library = object(Some(value), "targets.lib")?;
-        reject_unknown_fields(library, &["output", "exports"], "targets.lib")?;
+        reject_unknown_fields(
+            library,
+            &["output", "exports", "mode", "relocation"],
+            "targets.lib",
+        )?;
+        let format5 = matches!(data.get("format"), Some(WsonValue::Int(5)));
+        if !format5
+            && ["mode", "relocation"]
+                .iter()
+                .any(|key| library.contains_key(*key))
+        {
+            return Err("library mode/relocation require format = 5".into());
+        }
+        let library_mode = string(library, "mode", "targets.lib")?;
+        let mode = match library_mode.as_deref() {
+            None => None,
+            Some("hosted") => Some(PlatformMode::Hosted),
+            Some("freestanding") => Some(PlatformMode::Freestanding),
+            _ => return Err("library mode must be hosted or freestanding".into()),
+        };
+        let relocation = string(library, "relocation", "targets.lib")?;
+        if relocation
+            .as_ref()
+            .is_some_and(|r| !matches!(r.as_str(), "default" | "pic" | "static"))
+        {
+            return Err("library relocation must be default, pic, or static".into());
+        }
         let output = match string(library, "output", "targets.lib")?.as_deref() {
             None | Some("object") => NativeOutput::Object,
             Some("shared") => NativeOutput::Shared,
+            Some("static") if format5 => NativeOutput::Static,
             Some(_) => return Err("targets.lib output must be `object` or `shared`".into()),
         };
         // The native export parser enforces one portable C symbol per entry.
         let mut export_config = library.clone();
-        export_config.insert("output".into(), WsonValue::String(output.as_str().into()));
+        export_config.remove("mode");
+        export_config.remove("relocation");
+        export_config.insert(
+            "output".into(),
+            WsonValue::String(
+                if output == NativeOutput::Static {
+                    "object"
+                } else {
+                    output.as_str()
+                }
+                .into(),
+            ),
+        );
         let exports = native::parse(Some(&WsonValue::Object(export_config)), true)?
             .expect("library config exists")
             .exports;
@@ -161,7 +206,11 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
             path: "src/lib.wave".into(),
             output: Some(output),
             exports,
-            platform: PlatformSettings::default(),
+            platform: PlatformSettings {
+                mode,
+                relocation,
+                ..Default::default()
+            },
         });
     }
     let mut bin_names = HashSet::new();
@@ -212,7 +261,7 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
         None => None,
         Some(value) => {
             let build = object(Some(value), "build")?;
-            reject_unknown_fields(build, &["target"], "build")?;
+            reject_unknown_fields(build, &["target", "reproducible", "archiver"], "build")?;
             let target = string(build, "target", "build")?;
             if let Some(triple) = &target {
                 validate_triple(triple)?;
@@ -226,7 +275,7 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
         let config = object(Some(value), "target_config entry")?;
         reject_unknown_fields(
             config,
-            &["triple", "sysroot", "linker", "bins"],
+            &["triple", "sysroot", "linker", "bins", "lib", "archiver"],
             "target_config",
         )?;
         let triple = required_string(config, "triple", "target_config")?;
@@ -270,7 +319,49 @@ pub(crate) fn parse(data: &WsonMap, package_name: &str) -> Result<Model, String>
             validate_platform(&combined, "target_config binary override")?;
             bins.push(BinaryOverride { name, platform });
         }
+        let library = if let Some(value) = config.get("lib") {
+            if !matches!(data.get("format"), Some(WsonValue::Int(5))) {
+                return Err("target_config.lib requires format = 5".into());
+            }
+            let value = object(Some(value), "target_config.lib")?;
+            reject_unknown_fields(value, &["mode", "relocation"], "target_config.lib")?;
+            let mode = match string(value, "mode", "target_config.lib")?.as_deref() {
+                None => None,
+                Some("hosted") => Some(PlatformMode::Hosted),
+                Some("freestanding") => Some(PlatformMode::Freestanding),
+                _ => return Err("library mode must be hosted or freestanding".into()),
+            };
+            let relocation = string(value, "relocation", "target_config.lib")?;
+            if relocation
+                .as_ref()
+                .is_some_and(|r| !matches!(r.as_str(), "default" | "pic" | "static"))
+            {
+                return Err("invalid library relocation".into());
+            }
+            if !targets.iter().any(|t| t.kind == TargetKind::Library) {
+                return Err("library override requires a library target".into());
+            }
+            Some(PlatformSettings {
+                mode,
+                relocation,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+        let archiver = string(config, "archiver", "target_config")?;
+        if archiver.is_some() && !matches!(data.get("format"), Some(WsonValue::Int(5))) {
+            return Err("target archiver requires format = 5".into());
+        }
+        if archiver
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.starts_with('-'))
+        {
+            return Err("archiver must be one executable name or path".into());
+        }
         configs.push(TargetConfig {
+            library,
+            archiver,
             triple,
             sysroot,
             linker,
@@ -401,6 +492,7 @@ fn platform(object: &WsonMap, context: &str) -> Result<PlatformSettings, String>
         })
         .transpose()?;
     Ok(PlatformSettings {
+        relocation: None,
         mode,
         entry,
         startup,
@@ -742,12 +834,12 @@ mod tests {
     }
 
     #[test]
-    fn new_manifest_round_trips_explicit_format_three_targets_and_escaped_author() {
+    fn new_manifest_round_trips_format_five_targets_and_escaped_author() {
         for is_lib in [false, true] {
             let author = "Author \"quoted\" \\ path\nnext";
             let raw = render_new_manifest("app", author, is_lib);
             let m = decode(&raw, "vex.ws".into()).unwrap();
-            assert_eq!(m.format, 3);
+            assert_eq!(m.format, 5);
             assert_eq!(m.lib, is_lib);
             assert_eq!(m.author.as_deref(), Some(author));
             assert_eq!(m.targets.len(), 1);
@@ -759,6 +851,33 @@ mod tests {
                     TargetKind::Binary
                 }
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod external_library_contract {
+    use crate::{decode, NativeOutput, PlatformMode};
+    #[test]
+    fn format_five_library_settings_are_typed_and_do_not_reinterpret_old_formats() {
+        let manifest=decode(r#"{format=5,name="ffi",version="1.0.0",targets={lib={output="static",mode="freestanding",relocation="pic"}},build={reproducible=true,archiver="llvm-ar"},target_config=[{triple="aarch64-pc-windows-msvc",lib={relocation="default"},archiver="llvm-lib"}]}"#,"vex.ws".into()).unwrap();
+        assert_eq!(manifest.targets[0].output, Some(NativeOutput::Static));
+        assert!(manifest.reproducible);
+        let effective = manifest.platform_for(&manifest.targets[0], "aarch64-pc-windows-msvc");
+        assert_eq!(effective.mode, Some(PlatformMode::Freestanding));
+        assert_eq!(effective.relocation.as_deref(), Some("default"));
+        for raw in [
+            r#"{format=4,name="ffi",targets={lib={output="static"}}}"#,
+            r#"{format=4,name="ffi",targets={lib={mode="hosted"}}}"#,
+            r#"{format=5,name="ffi",targets={lib={mode="wasi"}}}"#,
+            r#"{format=5,name="ffi",targets={lib={relocation="pie"}}}"#,
+            r#"{format=5,name="ffi",targets={lib={}},build={archiver=""}}"#,
+            r#"{format=5,name="ffi",targets={lib={}},build={archiver="-ar"}}"#,
+            r#"{format=5,name="ffi",targets={lib={}},build={archiver="llvm\u0000ar"}}"#,
+            r#"{format=5,name="ffi",targets={lib={}},build={reproducible=1}}"#,
+            r#"{format=5,name="ffi",targets={lib={}},target_config=[{triple="x86_64-unknown-linux-gnu",lib={entry="start"}}]}"#,
+        ] {
+            assert!(decode(raw, "vex.ws".into()).is_err(), "accepted {raw}");
         }
     }
 }

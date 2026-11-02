@@ -18,14 +18,19 @@ pub fn clean(args: &[String], selection: &Selection) -> Result<(), Error> {
     };
     let _project = selection.enter()?;
     let _manifest = _project.primary();
-    let root = std::env::current_dir().map_err(Error::environment)?;
-    for name in [".vex", ".vex/init.json", ".vex/transaction.json"] {
-        state::reject_link(&root.join(name)).map_err(Error::environment)?;
-    }
-    if root.join(".vex/init.json").exists() || root.join(".vex/transaction.json").exists() {
-        return Err(Error::resolution(
-            "recovery pending; clean preserves the transaction; run vex fetch first",
-        ));
+    let source_root = std::env::current_dir().map_err(Error::environment)?;
+    let root = state::layout::build_root(&source_root);
+    let dependencies = state::layout::dependency(&source_root, ".vex");
+    for path in [
+        dependencies.join("init.json"),
+        dependencies.join("transaction.json"),
+        root.join(".vex/build-publication.json"),
+        root.join(".vex/report-publication.json"),
+    ] {
+        state::reject_link(&path).map_err(Error::environment)?;
+        if path.exists() {
+            return Err(Error::resolution("recovery pending; clean preserves transaction files; run a normal fetch/build first"));
+        }
     }
     if !state::artifacts::has_records(&root).map_err(Error::environment)? {
         ui::status(
@@ -40,8 +45,18 @@ pub fn clean(args: &[String], selection: &Selection) -> Result<(), Error> {
         state::Guard::acquire_existing_exclusive(ui::status)
     }
     .map_err(Error::environment)?;
+    let _build_guard = if !dry_run {
+        Some(
+            state::FileGuard::exclusive(&root.join(".vex/build.lock"), || {
+                ui::status("Waiting", "build directory")
+            })
+            .map_err(Error::environment)?,
+        )
+    } else {
+        None
+    };
     let mut output_error = None;
-    state::artifacts::clean(&guard, !dry_run, |action, path| {
+    state::artifacts::clean_at(&guard, &root, !dry_run, |action, path| {
         // Preview is command output, not progress, and remains visible with -q.
         if dry_run {
             if let Err(error) =

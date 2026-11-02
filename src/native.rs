@@ -15,6 +15,9 @@ pub struct NativeBuild {
     pub global: Vec<String>,
     pub inputs: Vec<String>,
     pub output: Vec<String>,
+    pub archive: Option<compiler::archive::ArchivePlan>,
+    pub requirements: Vec<Value>,
+    pub settings: Value,
 }
 
 pub fn configuration(manifest: &Manifest) -> Value {
@@ -192,7 +195,15 @@ pub fn prepare_target(
 ) -> Result<NativeBuild, Error> {
     let spec = compiler.target_spec(Some(triple))?;
     let manifests = manifests(root, resolution)?;
-    let mut build = prepare_settings(root, package_target, &spec, profile, check, generation)?;
+    let mut build = prepare_settings_with_compiler(
+        root,
+        package_target,
+        &spec,
+        profile,
+        check,
+        generation,
+        compiler.path(),
+    )?;
     let output = target_output(package_target);
     let format = spec["object_format"].as_str().unwrap();
     for manifest in &manifests {
@@ -225,7 +236,11 @@ pub fn prepare_target(
                     format,
                 )?
             };
-            if !check && output != Some(NativeOutput::Object) {
+            let resolved = Path::new(&argument)
+                .is_absolute()
+                .then(|| PathBuf::from(&argument));
+            build.requirements.push(json!({"package":manifest.name,"version":manifest.version,"manifest":manifest.source_path,"declared_path":library.path,"name":library.name,"target":triple,"argument":argument,"resolved_path":resolved,"search_paths":search_paths}));
+            if !check && !matches!(output, Some(NativeOutput::Object | NativeOutput::Static)) {
                 // Preserve package and declaration order: static archive order
                 // and repeated libraries are meaningful to native linkers.
                 build.global.push(format!("-Clink-arg={argument}"));
@@ -239,6 +254,7 @@ fn target_output(target: &PackageTarget) -> Option<NativeOutput> {
     (target.kind == TargetKind::Library).then_some(target.output.unwrap_or(NativeOutput::Object))
 }
 
+#[cfg(test)]
 fn prepare_settings(
     root: &Manifest,
     target: &PackageTarget,
@@ -247,6 +263,25 @@ fn prepare_settings(
     check: bool,
     generation: Option<&Path>,
 ) -> Result<NativeBuild, Error> {
+    prepare_settings_with_compiler(
+        root,
+        target,
+        spec,
+        profile,
+        check,
+        generation,
+        Path::new("wavec"),
+    )
+}
+fn prepare_settings_with_compiler(
+    root: &Manifest,
+    target: &PackageTarget,
+    spec: &Value,
+    profile: &str,
+    check: bool,
+    generation: Option<&Path>,
+    compiler: &Path,
+) -> Result<NativeBuild, Error> {
     let triple = spec["triple"].as_str().unwrap();
     let os = spec["os"].as_str().unwrap();
     let format = spec["object_format"].as_str().unwrap();
@@ -254,6 +289,11 @@ fn prepare_settings(
         .as_bool()
         .ok_or_else(|| Error::compiler("target-spec is missing boolean hosted"))?;
     let output = target_output(target);
+    if output == Some(NativeOutput::Static) && format == "wasm" {
+        return Err(Error::resolution(
+            "static archives require an ELF, Mach-O, or COFF target",
+        ));
+    }
     if output.is_some() && !matches!(format, "elf" | "macho" | "coff" | "wasm")
         || output == Some(NativeOutput::Shared) && format == "wasm"
     {
@@ -296,9 +336,12 @@ fn prepare_settings(
                 "hosted mode requires a hosted native target",
             ));
         }
-        PlatformMode::Freestanding if format != "elf" => {
+        PlatformMode::Freestanding
+            if format != "elf"
+                && !(target.kind == TargetKind::Library && matches!(format, "macho" | "coff")) =>
+        {
             return Err(Error::resolution(
-                "freestanding mode requires an ELF target",
+                "freestanding binary mode requires an ELF target; native object/static libraries also support Mach-O/COFF",
             ));
         }
         PlatformMode::Wasi if format != "wasm" || os != "wasi" || !hosted => {
@@ -314,7 +357,7 @@ fn prepare_settings(
     let link_settings = platform.entry.is_some()
         || platform.linker_script.is_some()
         || platform.startup == Some(Startup::None);
-    if target.kind == TargetKind::Library && (link_settings || platform.mode.is_some()) {
+    if target.kind == TargetKind::Library && link_settings {
         return Err(Error::resolution(
             "binary platform settings cannot be applied to a library target",
         ));
@@ -349,6 +392,9 @@ fn prepare_settings(
         global: vec![format!("--target={triple}")],
         inputs: Vec::new(),
         output: Vec::new(),
+        archive: None,
+        requirements: Vec::new(),
+        settings: json!({"mode":mode.as_str(),"relocation":if output==Some(NativeOutput::Shared){"pic"}else{platform.relocation.as_deref().unwrap_or("default")},"entry":platform.entry,"startup":platform.startup.map(|s|s.as_str()),"linker_script":script,"sysroot":null,"linker":null}),
     };
     if let Some(config) = root
         .target_config
@@ -371,11 +417,16 @@ fn prepare_settings(
         if sysroot.is_some() && linker.is_some() && format == "macho" {
             return Err(Error::resolution("selected compiler cannot forward a Mach-O sysroot to a custom linker; use the compiler's default linker"));
         }
+        build.settings["linker"] = json!(linker);
+        build.settings["sysroot"] = json!(sysroot);
         if let Some(sysroot) = sysroot {
             build.global.push(format!("--sysroot={sysroot}"));
             // Bundled ELF and Darwin linkers consume the compiler sysroot
             // directly. An explicit ELF linker needs explicit forwarding.
-            if !check && output != Some(NativeOutput::Object) && linker.is_some() {
+            if !check
+                && !matches!(output, Some(NativeOutput::Object | NativeOutput::Static))
+                && linker.is_some()
+            {
                 build.global.push(format!("-Clink-sysroot={sysroot}"));
             }
         }
@@ -389,6 +440,19 @@ fn prepare_settings(
         // This controls source/codegen semantics as well as default libraries,
         // and is meaningful even when only checking sources.
         build.output.push("--freestanding".into());
+    }
+    if let Some(relocation) = platform.relocation.as_deref().filter(|r| *r != "default") {
+        if !matches!(format, "elf" | "macho") {
+            return Err(Error::resolution(
+                "explicit library relocation is not supported for this target format",
+            ));
+        }
+        if output == Some(NativeOutput::Shared) && relocation != "pic" {
+            return Err(Error::resolution("shared library output requires PIC"));
+        }
+        build
+            .global
+            .extend(["-C".into(), format!("relocation-model={relocation}")]);
     }
     if check {
         return Ok(build);
@@ -406,7 +470,9 @@ fn prepare_settings(
     }
     let directory = generation
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("target"))
+        .unwrap_or_else(|| {
+            state::layout::output(&std::env::current_dir().unwrap_or_default(), "target")
+        })
         .join(triple)
         .join(profile);
     let directory = if root.scope.is_some() {
@@ -419,11 +485,47 @@ fn prepare_settings(
     } else {
         "bin"
     });
+    let mut compiler_output = output_directory.join(&filename);
+    if output == Some(NativeOutput::Static) && !check {
+        let requested = root
+            .target_config
+            .iter()
+            .find(|c| c.triple == triple)
+            .and_then(|c| c.archiver.as_deref())
+            .or(root.archiver.as_deref());
+        let requested = requested.map(|value| {
+            if Path::new(value).components().count() > 1 {
+                root.source_path.parent().unwrap().join(value)
+            } else {
+                PathBuf::from(value)
+            }
+        });
+        // Selection is bound later to the actual compiler executable.
+        compiler_output = directory
+            .join(".vex-obj/lib")
+            .join(&target.name)
+            .join("static")
+            .join(format!(
+                "{}.{}",
+                target.name,
+                if format == "coff" { "obj" } else { "o" }
+            ));
+        let selected = compiler::archive::ArchivePlan::select(
+            requested.as_deref(),
+            compiler,
+            output_directory.join(filename),
+            triple,
+            format,
+        )?;
+        build.archive = Some(selected);
+    }
     build
         .output
-        .extend(["-o".into(), path_text(&output_directory.join(filename))?]);
+        .extend(["-o".into(), path_text(&compiler_output)?]);
     match output {
-        Some(NativeOutput::Object) => build.output.push("--emit=obj".into()),
+        Some(NativeOutput::Static) | Some(NativeOutput::Object) => {
+            build.output.push("--emit=obj".into())
+        }
         Some(NativeOutput::Shared) => {
             build.output.push("--shared".into());
             build
@@ -450,7 +552,7 @@ fn prepare_settings(
         }
         None => {}
     }
-    if output != Some(NativeOutput::Object) {
+    if !matches!(output, Some(NativeOutput::Object | NativeOutput::Static)) {
         build.output.push(format!(
             "--target-dir={}",
             path_text(
@@ -471,6 +573,13 @@ fn prepare_settings(
 
 fn artifact_filename(target: &PackageTarget, os: &str, format: &str) -> String {
     match target_output(target) {
+        Some(NativeOutput::Static) => {
+            if format == "coff" {
+                format!("{}.lib", target.name)
+            } else {
+                format!("lib{}.a", target.name)
+            }
+        }
         Some(NativeOutput::Object) => format!(
             "{}.{}",
             target.name,
@@ -713,6 +822,7 @@ mod tests {
             entry: Some("start".into()),
             startup: None,
             linker_script: None,
+            relocation: None,
         };
         let bare = spec("wasm32-unknown-unknown", "unknown", "wasm", false);
         let build = prepare_settings(&root, &root.targets[0], &bare, "dev", false, None).unwrap();
@@ -769,6 +879,7 @@ mod tests {
             entry: Some("_start".into()),
             startup: Some(Startup::None),
             linker_script: None,
+            relocation: None,
         };
         let bare = spec("x86_64-unknown-none-elf", "none", "elf", false);
         let check = prepare_settings(&root, &root.targets[0], &bare, "dev", true, None).unwrap();
@@ -807,6 +918,8 @@ mod tests {
             sysroot: Some(PathBuf::from("../sdk")),
             linker: Some(path_text(&std::env::current_exe().unwrap()).unwrap()),
             bins: vec![],
+            library: None,
+            archiver: None,
         });
         let target = spec("aarch64-unknown-linux-gnu", "linux", "elf", true);
         let build = prepare_settings(&root, &root.targets[0], &target, "dev", false, None).unwrap();

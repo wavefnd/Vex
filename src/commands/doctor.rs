@@ -465,6 +465,13 @@ fn inspect_project(
             Err(error) => report.failure("project_compiler", error),
         }
     }
+    if let Some(selected) = compiler.as_mut() {
+        let root = std::env::current_dir().unwrap_or_default();
+        match selected.validate_identity(&root) {
+            Ok(())=>report.check("toolchain_identity","ok",true,"selected compiler/std satisfies the project pin",json!({"expected":compiler::identity::read(&root).ok().flatten(),"observed":selected.identity()})),
+            Err(error)=>{report.failure("toolchain_identity",error);return;}
+        }
+    }
     let mut targets = manifest.targets.iter().collect::<Vec<_>>();
     targets.sort_by_key(|target| (target.kind != TargetKind::Library, &target.name));
     let mut missing_entry = false;
@@ -570,8 +577,18 @@ fn inspect_project(
                 false,
                 None,
             )?;
-            let mut args = resolution.dependency_args()?;
-            if package_target.kind == TargetKind::Binary && manifest.lib {
+            let scoped = resolution.requires_package_graph() || manifest.reproducible;
+            compiler.package_graph(if scoped {
+                Some(resolution.compiler_package_graph()?)
+            } else {
+                None
+            })?;
+            let mut args = if scoped {
+                Vec::new()
+            } else {
+                resolution.dependency_args()?
+            };
+            if !scoped && package_target.kind == TargetKind::Binary && manifest.lib {
                 let root = std::env::current_dir().map_err(Error::environment)?;
                 args.push(format!("--dep={}={}", manifest.name, path_text(&root)?));
             }
@@ -627,7 +644,11 @@ fn inspect_project(
     if let Err(error) = std::env::current_dir()
         .map_err(Error::environment)
         .and_then(|root| {
-            state::artifacts::validate_output_paths(&root, &planned_paths).map_err(Error::compiler)
+            state::artifacts::validate_output_paths(
+                &state::layout::build_root(&root),
+                &planned_paths,
+            )
+            .map_err(Error::compiler)
         })
     {
         report.failure("output_paths", error);

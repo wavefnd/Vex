@@ -1,0 +1,33 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: MPL-2.0
+name: "Design discussion"
+description: "Discuss a contract or architecture change"
+labels: ["discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials and private source before posting. Security vulnerabilities belong in [private reporting](https://github.com/wavefnd/Vex/security/advisories/new), not this public form.
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem and scope"
+      description: "Which Vex contract needs a decision, and why?"
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: "Options and recommendation"
+      description: "Compare behavior, compatibility, ownership, failure recovery and tradeoffs."
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: "Acceptance and validation"
+      description: "How would we prove the design works on affected platforms?"
+    validations:
+      required: true

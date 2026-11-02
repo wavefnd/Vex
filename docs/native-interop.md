@@ -160,3 +160,8 @@ pinned public compiler. It builds C/C++/Rust fixtures outside Vex, links Wave in
 both directions, and checks object/shared artifacts, transitive native inputs,
 locked/offline behavior and conservative cleanup. A local cross-plan check is
 not a substitute for executing those host acceptance jobs.
+
+Format 5 adds target-aware deterministic static archives and explicit library
+mode/relocation. See [external builds](external-builds.md) and the
+[Meson consumer](../examples/meson-consumer/meson.build) for completed result,
+depfile, native requirements and portable provenance contracts.

@@ -10,16 +10,16 @@ See [manifest and operational contracts](reference.md) for field types, environm
 Vex - Wave package manager
 
 Usage:
-  vex [-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] <command> [options]
+  vex [-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] [--build-dir <path>] [--state-dir <path>] <command> [options]
   vex init [--lib]
-  vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]
-  vex run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]
+  vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>]
+  vex run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]
   vex check [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]
-  vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]
+  vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]
   vex fetch [--locked] [--offline] [--target <triple>]
   vex update [<package>...] [--target <triple>]
   vex info
-  vex metadata [--format=json] [--format-version <1|2>] [--locked] [--offline] [--target <triple>]
+  vex metadata [--format=json] [--format-version <1|2|3>] [--locked] [--offline] [--target <triple>]
   vex tree [--invert <name>] [--depth <n>] [--locked] [--offline] [--target <triple>]
   vex clean [--dry-run]
   vex prune [--apply] [--dry-run]
@@ -31,6 +31,7 @@ Usage:
   vex cache prune [--apply] [--dry-run]
   vex completions <bash|zsh|fish|powershell>
   vex manpage
+  vex toolchain capture [--wavec <path>] [--std <path>] [--replace]
   vex --version
 
 Output:
@@ -49,7 +50,7 @@ Manage init
 ## build
 
 ```text
-usage: vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline]
+usage: vex build [--lib] [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>]
 
 Compile selected package targets
 ```
@@ -57,7 +58,7 @@ Compile selected package targets
 ## run
 
 ```text
-usage: vex run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]
+usage: vex run [--bin <name>] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]
 
 Compile and execute one binary
 ```
@@ -73,7 +74,7 @@ Check selected package targets
 ## test
 
 ```text
-usage: vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [-- <args...>]
+usage: vex test [filter] [--target <triple>] [--profile <name>|--release] [--dry-run] [--locked] [--offline] [--artifact-manifest <path>] [--depfile <path>] [-- <args...>]
 
 Compile and execute explicit main-based tests; run every selected test and return the first failure
 ```
@@ -105,7 +106,7 @@ Manage info
 ## metadata
 
 ```text
-usage: vex metadata [--format=json] [--format-version <1|2>] [--locked] [--offline] [--target <triple>]
+usage: vex metadata [--format=json] [--format-version <1|2|3>] [--locked] [--offline] [--target <triple>]
 
 Manage metadata
 ```
@@ -196,4 +197,12 @@ Print shell completion script
 usage: vex manpage
 
 Print the vex(1) manual
+```
+
+## toolchain
+
+```text
+usage: vex toolchain capture [--wavec <path>] [--std <path>] [--replace]
+
+Record a prepared host compiler/std pair by content identity; never downloads a toolchain.
 ```

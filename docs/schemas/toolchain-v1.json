@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vex toolchain identity v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "hosts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "compiler_version",
+          "compiler_sha256",
+          "std_sha256"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "compiler_version": {
+            "type": "string"
+          },
+          "compiler_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "std_sha256": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_revision": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  }
+}
