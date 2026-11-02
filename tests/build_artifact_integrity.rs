@@ -575,7 +575,12 @@ fn external_roots_reports_and_toolchain_pins_preserve_source_and_owned_files() {
         64
     );
     let deps = fs::read_to_string(&depfile).unwrap();
-    assert!(deps.contains("src/lib.wave"));
+    let source_suffix = if cfg!(windows) {
+        r"src\\lib.wave"
+    } else {
+        "src/lib.wave"
+    };
+    assert!(deps.contains(source_suffix), "{deps}");
     assert!(deps.contains("vex.lock"));
     assert!(deps.contains("prepared\\ std"));
     let previous = fs::read(&report).unwrap();
