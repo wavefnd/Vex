@@ -177,24 +177,23 @@ pub(crate) fn validate_owner(path: &Path, project: &Path, create: bool) -> Resul
 
 /// Persistent coordination is separate from the shared Git object cache.
 pub fn coordination(project: &Path) -> Result<PathBuf, String> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .map(|p| p.join("Vex/state"))
+    let selected = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(|p| (PathBuf::from(p), "Vex/state"))
     } else {
         std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .map(|p| p.join("vex"))
+            .map(|p| (PathBuf::from(p), "vex"))
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|p| p.join(".local/state/vex"))
+                std::env::var_os("HOME").map(|p| (PathBuf::from(p).join(".local/state"), "vex"))
             })
     };
-    let base = base.unwrap_or_else(|| std::env::temp_dir().join("vex-state"));
+    let (base, owned) = selected.unwrap_or_else(|| (std::env::temp_dir(), "vex-state"));
     if !base.is_absolute() {
         return Err("OS state directory must be absolute".into());
     }
+    // OS-selected roots may have physical aliases (macOS /var, redirected
+    // homes). Resolve that boundary before appending Vex-owned components;
+    // links within the owned coordination tree remain rejected by ensure_tree.
+    let base = normalize(&base)?.join(owned);
     let digest = identity_digest(project);
     Ok(base.join("projects").join(digest).join("state.lock"))
 }

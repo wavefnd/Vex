@@ -7,6 +7,13 @@ use std::{env, fs, path::Path, process};
 fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
+fn output_prefix(actual: &str, suffix: &Path) -> Option<std::path::PathBuf> {
+    let path = Path::new(actual);
+    if !path.ends_with(suffix) { return None; }
+    let mut prefix = path.to_path_buf();
+    for _ in suffix.components() { prefix.pop(); }
+    Some(prefix)
+}
 fn main() {
     let args: Vec<_> = env::args().collect();
     if args.iter().any(|arg| arg == "--version") {
@@ -38,15 +45,14 @@ fn main() {
     let actual_directory=args.iter().find_map(|arg|arg.strip_prefix("--target-dir="));
     let mut prefix=None;
     for output in outputs.lines() {
-        if let Some(actual)=actual_output.and_then(|path|path.strip_suffix(output)) {prefix=Some(actual.to_owned());break;}
-        if let Some(parent)=Path::new(output).parent().and_then(|path|path.to_str()) {
-            if let Some(actual)=actual_directory.and_then(|path|path.strip_suffix(parent)) {prefix=Some(actual.to_owned());break;}
+        if let Some(actual)=actual_output.and_then(|path|output_prefix(path, Path::new(output))) {prefix=Some(actual);break;}
+        if let Some(parent)=Path::new(output).parent() {
+            if let Some(actual)=actual_directory.and_then(|path|output_prefix(path,parent)) {prefix=Some(actual);break;}
         }
     }
     for original in outputs.lines() {
-        let mapped=prefix.as_ref().map(|prefix|format!("{prefix}{original}")).unwrap_or_else(||original.to_owned());
-        let path=mapped.as_str();
-        let path = Path::new(path);
+        let mapped=prefix.as_ref().map(|prefix|prefix.join(original)).unwrap_or_else(||Path::new(original).to_path_buf());
+        let path = mapped.as_path();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         if env::var_os("DIRECTORY_OUTPUT").is_some() {
             fs::create_dir(path).unwrap();

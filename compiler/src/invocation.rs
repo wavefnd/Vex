@@ -698,7 +698,7 @@ fn validate_requested_outputs(
                 _ => result.push(component.as_os_str()),
             }
         }
-        result
+        state::layout::path_form(&result)
     };
     let expected = normalize(Path::new(expected));
     let compile = plan["compile"].as_array().unwrap();
@@ -1043,6 +1043,26 @@ fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 #[cfg(test)]
 mod message_tests {
+
+    #[cfg(windows)]
+    #[test]
+    fn requested_output_accepts_equivalent_normal_and_verbatim_windows_paths() {
+        let root = std::path::Path::new(r"\\?\C:\build");
+        let plan = serde_json::json!({"emit":"obj","link":null,
+            "compile":[{"output":"target/app.o"}]});
+        let args = vec![
+            "--emit=obj".into(),
+            "-o".into(),
+            "C:/build/target/app.o".into(),
+        ];
+        super::validate_requested_outputs(&plan, root, &args).unwrap();
+        let other = vec![
+            "--emit=obj".into(),
+            "-o".into(),
+            "C:/build/target/other.o".into(),
+        ];
+        assert!(super::validate_requested_outputs(&plan, root, &other).is_err());
+    }
     #[test]
     fn tracking_failure_never_replaces_an_existing_error_category() {
         for category in [
