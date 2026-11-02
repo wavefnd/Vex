@@ -133,10 +133,16 @@ class RepositoryContracts(unittest.TestCase):
     def test_smoke_helpers_decode_utf8_even_under_legacy_locale(self):
         import importlib.util
         import sys
+        import io
+        import contextlib
         for name in ['native_interop','wave_compatibility']:
             spec=importlib.util.spec_from_file_location(name,Path(__file__).resolve().parents[1]/(name+'.py'))
             module=importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            with patch('subprocess._text_encoding',return_value='cp1252'):
+            raw = io.BytesIO()
+            output = io.TextIOWrapper(raw, encoding='cp1252')
+            with contextlib.redirect_stdout(output), patch('subprocess._text_encoding',return_value='cp1252'):
                 result=module.run([sys.executable,'-c',"import sys;sys.stdout.buffer.write(bytes.fromhex('eab081'))"],Path.cwd(),{})
+            output.flush()
+            self.assertIn('각', raw.getvalue().decode('utf-8'))
             self.assertEqual(result.stdout,'각')

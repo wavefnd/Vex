@@ -29,7 +29,9 @@ impl Fixture {
         fs::write(root.join("vex.ws"), "{name=\"app\",version=0.1.0,lib=true}").unwrap();
         fs::write(root.join("src/lib.wave"), "fun main() {}\n").unwrap();
         fs::write(root.join("src/main.wave"), "fun main() {}\n").unwrap();
-        Self { root }
+        Self {
+            root: root.canonicalize().unwrap(),
+        }
     }
     fn shared() -> Self {
         let fixture = Self::new();
@@ -768,7 +770,7 @@ fn absolute_external_outputs_and_private_report_aliases_use_the_same_storage_bou
     let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
     // On Windows the compiler receives a normal drive path while the selected
     // build root is canonical/verbatim. Both denote this exact owned location.
-    let output = build.join(name);
+    let output = state::layout::path_form(&build.join(name));
     let mut plan = plan_object(output.to_str().unwrap());
     plan["source_inputs"] = json!(["src/lib.wave"]);
     let first = f

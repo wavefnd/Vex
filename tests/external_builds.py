@@ -202,7 +202,7 @@ def main():
         if file_hash(EXAMPLE/name) != expected:
             raise RuntimeError('reviewed Whale-shaped fixture changed: '+name)
     with tempfile.TemporaryDirectory(prefix='vex-external-contract-') as path:
-        temporary = Path(path)
+        temporary = Path(path).resolve()
         env = dict(os.environ, VEX_WAVEC=str(args.wavec.resolve()), VEX_WAVE_STD=str(args.std.resolve()),
                    VEX_CACHE_HOME=str(temporary/'cache'), XDG_STATE_HOME=str(temporary/'state'))
         for key in ['GH_TOKEN', 'GITHUB_TOKEN', 'VEX_BUILD_DIR', 'VEX_STATE_DIR']:

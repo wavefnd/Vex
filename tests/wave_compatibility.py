@@ -11,10 +11,16 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
 def run(command, cwd, env, *, succeeds=True):
+    # CI may redirect stdout through a legacy Windows code page. Keep both
+    # decoding and replayed diagnostic bytes UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     result = subprocess.run(command, cwd=cwd, env=env, text=True, encoding="utf-8", capture_output=True)
     print(f"$ {' '.join(map(str, command))}", flush=True)
     print(result.stdout, end="", flush=True)

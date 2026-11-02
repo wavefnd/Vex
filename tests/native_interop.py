@@ -17,10 +17,16 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
 def run(command, cwd, env, expected=0, *, native_tool=False):
+    # CI may redirect stdout through a legacy Windows code page. Keep both
+    # decoding and replayed diagnostic bytes UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     command = list(map(str, command))
     if env.get("VEX_TEST_TARGET_RUNNER") and not native_tool:
         command.insert(0, env["VEX_TEST_TARGET_RUNNER"])
