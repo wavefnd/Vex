@@ -18,3 +18,5 @@ wson.workspace = true
 sha2 = "0.11.1"
 serde_json.workspace = true
 serde = { version = "1", features = ["derive"] }
+
+state.workspace = true

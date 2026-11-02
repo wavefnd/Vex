@@ -63,9 +63,14 @@ impl LockedPackage {
     pub fn directory(&self) -> PathBuf {
         let (LockedSource::Path { resolved, .. } | LockedSource::Git { resolved, .. }) =
             &self.source;
+        let physical = if resolved.starts_with(".vex") {
+            state::layout::dependency(&std::env::current_dir().unwrap_or_default(), resolved)
+        } else {
+            resolved.clone()
+        };
         self.subdir
             .as_ref()
-            .map_or_else(|| resolved.clone(), |subdir| resolved.join(subdir))
+            .map_or_else(|| physical.clone(), |subdir| physical.join(subdir))
     }
 }
 

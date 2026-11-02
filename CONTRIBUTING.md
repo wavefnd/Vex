@@ -217,3 +217,15 @@ GitHub's API and signature metadata receive the merge exception. Synthetic PR
 merge refs are not used as contribution heads. No DCO application or repository
 write token is used. Repair your own missing certification with
 `git commit --amend -s`, or rebase and sign off the affected contribution commits.
+
+## Ownership and issue reports
+
+`MAINTAINERS` is the authoritative subsystem map. When paths or maintainers
+change, update it and `.github/CODEOWNERS` in the same PR. CODEOWNERS requests
+review; it does not grant repository permissions or configure a bypass. Check
+GitHub's CODEOWNERS validation on the branch after pushing.
+
+Use the bug, feature or design issue forms. Minimal manifests, sanitized
+lockfiles and exact commands help reproduce dependency failures. Optional
+fields may be left empty. Report vulnerabilities through the private channel
+in [SECURITY.md](SECURITY.md).

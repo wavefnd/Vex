@@ -36,7 +36,12 @@ fn run_reported() -> Result<i32, diagnostic::Error> {
     use serde_json::json;
     let mut raw = std::env::args_os().skip(1);
     let mut path = None;
-    let mut selection = crate::project::Selection::default();
+    let mut selection = crate::project::Selection {
+        build_dir: std::env::var_os("VEX_BUILD_DIR").map(std::path::PathBuf::from),
+        state_dir: std::env::var_os("VEX_STATE_DIR").map(std::path::PathBuf::from),
+        ..Default::default()
+    };
+    let mut explicit_storage = std::collections::BTreeSet::new();
     let mut args = Vec::new();
     let mut runtime = Vec::new();
     let mut quiet = false;
@@ -94,6 +99,19 @@ fn run_reported() -> Result<i32, diagnostic::Error> {
             quiet = true;
         } else if arg == "--verbose" || arg == "-v" || arg == "-vv" {
             verbosity = (verbosity + if arg == "-vv" { 2 } else { 1 }).min(2);
+        } else if arg == "--build-dir" || arg == "--state-dir" {
+            if !explicit_storage.insert(arg.clone()) {
+                return Err(Error::usage("storage selector may only be specified once"));
+            }
+            let value = raw
+                .next()
+                .filter(|v| !v.is_empty() && !v.to_string_lossy().starts_with('-'))
+                .ok_or_else(|| Error::usage("storage selector requires a directory"))?;
+            if arg == "--build-dir" {
+                selection.build_dir = Some(value.into());
+            } else {
+                selection.state_dir = Some(value.into());
+            }
         } else if arg == "--message-file" || arg == "--manifest-path" {
             let slot = if arg == "--message-file" {
                 &mut path
@@ -148,6 +166,7 @@ fn run_reported() -> Result<i32, diagnostic::Error> {
                     | "metadata"
                     | "info"
                     | "doctor"
+                    | "toolchain"
             )
         })
     {
@@ -287,6 +306,7 @@ fn dispatch(
                 | "clean"
                 | "prune"
                 | "doctor"
+                | "toolchain"
         ) {
         help_args = vec![args[0].clone(), "--help".into()];
         help_args.as_slice()
@@ -310,6 +330,7 @@ fn dispatch(
                 | "clean"
                 | "prune"
                 | "doctor"
+                | "toolchain"
         )
     {
         return Err(Error::usage(
@@ -342,6 +363,10 @@ fn dispatch(
         "tree" => tree(&args[1..], selection).map(|()| Outcome::success()),
         "metadata" => {
             crate::commands::metadata::metadata(&args[1..], selection).map(|()| Outcome::success())
+        }
+        "toolchain" => {
+            crate::commands::toolchain::toolchain(&args[1..], selection)?;
+            Ok(Outcome::success())
         }
         "setup" => setup(&args[1..]).map(|()| Outcome::success()),
         "clean" => {

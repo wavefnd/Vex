@@ -172,7 +172,7 @@ even when selecting a single target:
 ```json
 {
   "schema": "vex.build-plan",
-  "schema_version": 1,
+  "schema_version": 2,
   "target": "x86_64-unknown-linux-gnu",
   "profile": { "name": "dev", "opt_level": 0 },
   "plans": [
@@ -195,3 +195,7 @@ direct compiler-plan stdout shape is replaced by this envelope.
 configuration without querying a compiler. It does not guess an actual default
 compiler triple or an artifact path. `vex metadata` defaults to schema 1 for
 single-target consumers; use `--format-version 2` for mixed or multiple targets.
+
+Format 5 extends the library declarations, external storage, completed results
+and dry-run schema 2. See [external builds](external-builds.md). Formats 1–4
+retain their meanings; new initialization uses format 5 with a ready v4 lock.

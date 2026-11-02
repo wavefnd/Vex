@@ -32,3 +32,15 @@ option(
     value: '',
     description: 'Platform ID from platforms.json for full compiler/ABI acceptance',
 )
+option(
+    'contract_wavec',
+    type: 'string',
+    value: '',
+    description: 'Explicit prepared compiler for supplemental external-build contract acceptance',
+)
+option(
+    'contract_std',
+    type: 'string',
+    value: '',
+    description: 'Matching prepared std root for external-build contract acceptance',
+)

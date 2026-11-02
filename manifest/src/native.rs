@@ -21,6 +21,7 @@ pub struct NativeConfig {
 pub enum NativeOutput {
     Object,
     Shared,
+    Static,
 }
 
 impl NativeOutput {
@@ -28,6 +29,7 @@ impl NativeOutput {
         match self {
             Self::Object => "object",
             Self::Shared => "shared",
+            Self::Static => "static",
         }
     }
 }
@@ -106,7 +108,7 @@ pub(crate) fn parse(value: Option<&WsonValue>, lib: bool) -> Result<Option<Nativ
             validate_path(path, "native library path")?;
             if ![".o", ".obj", ".a", ".lib"]
                 .iter()
-                .any(|extension| path.ends_with(extension))
+                .any(|extension| path.to_ascii_lowercase().ends_with(extension))
             {
                 return Err("native library `path` must name an object or static library (.o, .obj, .a, or .lib); use `name` and `search_paths` for shared libraries".into());
             }

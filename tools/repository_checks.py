@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_INTEROP = frozenset({'c', 'cpp-c-abi', 'rust-c-abi', 'wave-object', 'wave-shared', 'wave-static'})
 
 
 def validate(root=ROOT):
@@ -61,6 +62,10 @@ def acceptance(directory, commit, rows, pin=None):
                 or report.get('wave_version') != pin['version']
                 or not re.fullmatch('[0-9a-f]{64}', report.get('compiler_sha256', ''))):
             raise ValueError(f'invalid acceptance evidence for {row["id"]}')
+        coverage = report.get('native_interop')
+        if (not isinstance(coverage, list) or any(not isinstance(c, str) for c in coverage)
+                or len(coverage) != len(set(coverage)) or set(coverage) != NATIVE_INTEROP):
+            raise ValueError(f'invalid native interoperability evidence for {row["id"]}')
         if row['executor'] == 'qemu':
             if (report.get('build_method') != 'cross'
                     or report.get('build_host') != 'x86_64-unknown-linux-gnu'

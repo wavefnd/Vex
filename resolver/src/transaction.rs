@@ -24,7 +24,7 @@ impl Transaction {
         if self.names.borrow().contains(name) {
             self.stage.join(name)
         } else {
-            self.root.join(".vex/deps").join(name)
+            state::layout::dependency(&self.root, ".vex/deps").join(name)
         }
     }
 
@@ -37,8 +37,7 @@ impl Transaction {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        let directory = root
-            .join(".vex/transactions")
+        let directory = state::layout::dependency(root, ".vex/transactions")
             .join(format!("{}-{stamp}", std::process::id()));
         let stage = directory.join("deps");
         Ok(Self {
@@ -72,7 +71,8 @@ impl Transaction {
         if let Some(previous) = previous {
             valid_name(previous)?;
         }
-        let live = self.root.join(".vex/deps").join(previous.unwrap_or(name));
+        let live =
+            state::layout::dependency(&self.root, ".vex/deps").join(previous.unwrap_or(name));
         if previous.is_some() && fs::symlink_metadata(&live).is_ok() {
             crate::paths::validate_managed_checkout_path(&live).map_err(|e| e.to_string())?;
             if !live.join(".git").is_dir() {
@@ -96,7 +96,7 @@ impl Transaction {
             }
             return Ok(());
         }
-        let live_root = self.root.join(".vex/deps");
+        let live_root = state::layout::dependency(&self.root, ".vex/deps");
         state::ensure_dir(&live_root)?;
         // Recheck dirty data at the last possible point before moving anything.
         let mut entries = Vec::new();
@@ -120,7 +120,7 @@ impl Transaction {
             self.directory.as_path(),
             self.directory.parent().unwrap(),
             live_root.as_path(),
-            &self.root.join(".vex"),
+            &state::layout::dependency(&self.root, ".vex"),
             self.root.as_path(),
         ] {
             state::sync_dir(directory).map_err(err)?;
@@ -148,7 +148,7 @@ impl Transaction {
 
     fn publish_record(&self, mut record: Value) -> Result<(), String> {
         for name in self.names.borrow().iter() {
-            let live = self.root.join(".vex/deps").join(name);
+            let live = state::layout::dependency(&self.root, ".vex/deps").join(name);
             if live.exists() {
                 rename(&live, &self.directory.join("backup").join(name))?;
             }
@@ -195,13 +195,13 @@ pub(crate) fn recover(root: &Path, dry_run: bool) -> Result<(), String> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
         return Err("invalid journal directory".into());
     }
-    let directory = root.join(".vex/transactions").join(id);
+    let directory = state::layout::dependency(root, ".vex/transactions").join(id);
     for p in [
-        root.join(".vex/transactions"),
+        state::layout::dependency(root, ".vex/transactions"),
         directory.clone(),
         directory.join("deps"),
         directory.join("backup"),
-        root.join(".vex/deps"),
+        state::layout::dependency(root, ".vex/deps"),
     ] {
         state::reject_link(&p)?;
     }
@@ -248,13 +248,13 @@ pub(crate) fn recover(root: &Path, dry_run: bool) -> Result<(), String> {
             .as_bool()
             .ok_or("missing journal backup flag")?;
         for p in [
-            root.join(".vex/deps").join(name),
+            state::layout::dependency(root, ".vex/deps").join(name),
             directory.join("backup").join(name),
             directory.join("deps").join(name),
         ] {
             state::reject_link(&p)?;
         }
-        let live = root.join(".vex/deps").join(name);
+        let live = state::layout::dependency(root, ".vex/deps").join(name);
         let backup = directory.join("backup").join(name);
         let stage = directory.join("deps").join(name);
         if committed && (!live.is_dir() || stage.exists()) {
@@ -280,7 +280,7 @@ pub(crate) fn recover(root: &Path, dry_run: bool) -> Result<(), String> {
     if !committed {
         for entry in entries.iter().rev() {
             let name = entry["name"].as_str().unwrap();
-            let live = root.join(".vex/deps").join(name);
+            let live = state::layout::dependency(root, ".vex/deps").join(name);
             let backup = directory.join("backup").join(name);
             let stage = directory.join("deps").join(name);
             if backup.exists() {
@@ -307,10 +307,10 @@ pub(crate) fn recover(root: &Path, dry_run: bool) -> Result<(), String> {
 
 fn finish(root: &Path, _directory: &Path) -> Result<(), String> {
     fs::remove_file(journal(root)).map_err(err)?;
-    state::sync_dir(&root.join(".vex")).map_err(err)
+    state::sync_dir(&state::layout::dependency(root, ".vex")).map_err(err)
 }
 fn journal(root: &Path) -> PathBuf {
-    root.join(".vex/transaction.json")
+    state::layout::dependency(root, ".vex/transaction.json")
 }
 fn err(e: std::io::Error) -> String {
     e.to_string()

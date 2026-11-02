@@ -82,7 +82,10 @@ pub(crate) fn relative_to_root(path: &Path, root: &Path) -> PathBuf {
 }
 
 pub(crate) fn validate_managed_root(root: &Path, dep_root: &Path) -> Result<(), Error> {
-    reject_symbolic_link(&root.join(".vex"), "managed Vex directory")?;
+    reject_symbolic_link(
+        &state::layout::dependency(root, ".vex"),
+        "managed Vex directory",
+    )?;
     reject_symbolic_link(dep_root, "managed dependency directory")
 }
 
@@ -191,13 +194,15 @@ mod tests {
         let outside = root.with_extension("outside");
         fs::create_dir_all(&root).expect("test project must be created");
         fs::create_dir_all(&outside).expect("outside directory must be created");
-        symlink(&outside, root.join(".vex")).expect("test link must be created");
+        symlink(&outside, state::layout::dependency(&root, ".vex"))
+            .expect("test link must be created");
 
-        let error = validate_managed_root(&root, &root.join(".vex/deps"))
+        let error = validate_managed_root(&root, &state::layout::dependency(&root, ".vex/deps"))
             .expect_err("managed root symlinks must be rejected");
         assert!(error.contains("must not be a symbolic link"), "{error}");
 
-        fs::remove_file(root.join(".vex")).expect("test link must be removed");
+        fs::remove_file(state::layout::dependency(&root, ".vex"))
+            .expect("test link must be removed");
         fs::remove_dir_all(root).expect("test project must be removed");
         fs::remove_dir_all(outside).expect("outside directory must be removed");
     }

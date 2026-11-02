@@ -55,6 +55,16 @@ impl Fixture {
                 "{ version = 3, package = [] }\n",
             )
             .unwrap();
+            let prepared = self
+                .command()
+                .args(["fetch", "--offline"])
+                .output()
+                .unwrap();
+            assert!(
+                prepared.status.success(),
+                "{}",
+                String::from_utf8_lossy(&prepared.stderr)
+            );
         }
     }
     fn command(&self) -> Command {
@@ -559,4 +569,121 @@ fn every_declared_entry_is_validated_before_doctor_plans_any_target() {
     assert_eq!(check(&report, "dry_run")["status"], "not_checked");
     assert!(!f.calls().lines().any(|call| call.contains(" build ")));
     assert_eq!(before, snapshot(&f.work));
+}
+
+#[test]
+fn malformed_version_tokens_are_compiler_errors() {
+    let f = Fixture::new();
+    for version in ["banana", "1.2", "01.2.3"] {
+        let out = f
+            .command()
+            .env("DOCTOR_VERSION", version)
+            .args(["doctor", "--format=json"])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    for version in ["0.2.1-pre-beta-dev", "0.2.1+development"] {
+        let out = f
+            .command()
+            .env("DOCTOR_VERSION", version)
+            .args(["doctor", "--format=json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn an_explicit_plan_target_mismatch_fails_without_compilation() {
+    let f = Fixture::new();
+    f.project(true);
+    for args in [
+        vec!["build", "--dry-run", "--target", "doctor-cross-target"],
+        vec!["build", "--dry-run", "--target=doctor-cross-target"],
+        vec!["doctor", "--format=json", "--target", "doctor-cross-target"],
+    ] {
+        let out = f
+            .command()
+            .env("DOCTOR_PLAN_TARGET", host_target())
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("target mismatch")
+                || String::from_utf8_lossy(&out.stdout).contains("target mismatch")
+        );
+    }
+}
+#[cfg(unix)]
+#[test]
+fn path_lookup_skips_nonexecutables_but_explicit_selection_is_preserved() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let bad = f.root.join("bad-path");
+    fs::create_dir(&bad).unwrap();
+    let file = bad.join("wavec");
+    fs::write(&file, "not executable").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    let path = std::env::join_paths([bad.as_path(), f.bin.as_path()]).unwrap();
+    let output = f
+        .command()
+        .env_remove("VEX_WAVEC")
+        .env("PATH", &path)
+        .args(["doctor", "--format=json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let explicit = f
+        .command()
+        .env("VEX_WAVEC", file)
+        .env("PATH", path)
+        .args(["doctor", "--format=json"])
+        .output()
+        .unwrap();
+    assert_eq!(explicit.status.code(), Some(5));
+}
+#[test]
+fn quiet_setup_suppresses_installation_progress_on_failure() {
+    let f = Fixture::new();
+    fs::copy(fake(), f.bin.join(exe("curl"))).unwrap();
+    for quiet in [false, true] {
+        let mut command = f.command();
+        command.env("VEX_TOOLCHAIN_HOME", f.root.join("toolchain"));
+        if quiet {
+            command.arg("--quiet");
+        }
+        let output = command
+            .args(["setup", "wavec", "--version", "0.2.1-pre-beta"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).contains("Installing"),
+            !quiet
+        );
+    }
 }

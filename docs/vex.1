@@ -3,22 +3,22 @@
 vex \- Wave package manager
 .SH SYNOPSIS
 .B vex
-[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] <command> [options]
+[-q|--quiet] [-v|--verbose] [--message-file <new-path>] [--manifest-path <vex.ws>] [-p|--package <name>|--workspace] [--features <features>] [--no-default-features] [--include-tests] [--build-dir <path>] [--state-dir <path>] <command> [options]
 .SH COMMANDS
 .TP
 .B vex init [\-\-lib]
 Manage init
 .TP
-.B vex build [\-\-lib] [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline]
+.B vex build [\-\-lib] [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\-artifact\-manifest <path>] [\-\-depfile <path>]
 Compile selected package targets
 .TP
-.B vex run [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\- <args...>]
+.B vex run [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\-artifact\-manifest <path>] [\-\-depfile <path>] [\-\- <args...>]
 Compile and execute one binary
 .TP
 .B vex check [\-\-lib] [\-\-bin <name>] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline]
 Check selected package targets
 .TP
-.B vex test [filter] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\- <args...>]
+.B vex test [filter] [\-\-target <triple>] [\-\-profile <name>|\-\-release] [\-\-dry\-run] [\-\-locked] [\-\-offline] [\-\-artifact\-manifest <path>] [\-\-depfile <path>] [\-\- <args...>]
 Compile and execute explicit main-based tests; run every selected test and return the first failure
 .TP
 .B vex fetch [\-\-locked] [\-\-offline] [\-\-target <triple>]
@@ -30,7 +30,7 @@ Manage update
 .B vex info
 Manage info
 .TP
-.B vex metadata [\-\-format=json] [\-\-format\-version <1|2>] [\-\-locked] [\-\-offline] [\-\-target <triple>]
+.B vex metadata [\-\-format=json] [\-\-format\-version <1|2|3>] [\-\-locked] [\-\-offline] [\-\-target <triple>]
 Manage metadata
 .TP
 .B vex tree [\-\-invert <name>] [\-\-depth <n>] [\-\-locked] [\-\-offline] [\-\-target <triple>]
@@ -65,6 +65,9 @@ Print shell completion script
 .TP
 .B vex manpage
 Print the vex(1) manual
+.TP
+.B vex toolchain capture [\-\-wavec <path>] [\-\-std <path>] [\-\-replace]
+Record a prepared host compiler/std pair by content identity; never downloads a toolchain.
 .SH FILES
 vex.ws, vex.lock
 .SH ENVIRONMENT

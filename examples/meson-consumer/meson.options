@@ -1,0 +1,24 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# SPDX-License-Identifier: MPL-2.0
+option(
+    'vex',
+    type: 'string',
+    value: 'vex',
+    description: 'Prepared Vex executable on the build machine',
+)
+option(
+    'wave_target',
+    type: 'string',
+    value: '',
+    description: 'Exact Wave output target; empty selects compiler host',
+)
+option('wave_profile', type: 'string', value: 'dev')
+option('wave_features', type: 'array', value: [])
+option(
+    'adapter',
+    type: 'string',
+    value: '',
+    description: 'Optional absolute path to tools/meson_consumer.py',
+)

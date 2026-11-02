@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 
 pub mod artifacts;
 pub mod edit;
+pub mod layout;
 mod scaffold;
 pub use scaffold::initialize;
 
 #[derive(Debug)]
 pub struct Guard {
     _file: File,
+    _project: File,
     root: PathBuf,
 }
 
@@ -46,9 +48,27 @@ impl Guard {
         let root = std::env::current_dir()
             .and_then(|p| p.canonicalize())
             .map_err(|e| e.to_string())?;
-        let managed = root.join(".vex");
+        // One project identity coordinates source manifests/lockfiles even when
+        // callers choose different dependency stores or output directories.
+        let coordination = layout::coordination(&root)?;
         if create {
-            ensure_dir(&managed)?;
+            ensure_tree(coordination.parent().unwrap())?;
+        }
+        let project_file = acquire_file(&coordination, shared, create, || {
+            waiting("Waiting", format!("project {}", root.display()))
+        })
+        .map_err(|e| format!("cannot acquire project lease: {e}; run vex fetch first"))?;
+        if !project_file
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .is_file()
+        {
+            return Err("project coordination must be a regular file".into());
+        }
+        inherit(&project_file).map_err(|e| e.to_string())?;
+        let managed = layout::dependency(&root, ".vex");
+        if create {
+            ensure_tree(&managed)?;
         } else {
             reject_link(&managed)?;
         }
@@ -62,7 +82,12 @@ impl Guard {
             return Err("project coordination path must be a regular file".into());
         }
         inherit(&file).map_err(|e| format!("cannot protect compiler/Git child lifetime: {e}"))?;
-        let guard = Self { _file: file, root };
+        layout::validate_owner(&managed.join("store-owner.json"), &root, create)?;
+        let guard = Self {
+            _file: file,
+            _project: project_file,
+            root,
+        };
         scaffold::recover(guard.root(), shared || !create)?;
         Ok(guard)
     }
@@ -296,4 +321,53 @@ pub fn atomic_rename(from: &Path, to: &Path) -> io::Result<()> {
     }
     sync_dir(from.parent().unwrap())?;
     sync_dir(to.parent().unwrap())
+}
+
+/// Create only ordinary directory components; reject links at every boundary.
+pub fn ensure_tree(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        ensure_tree(parent)?;
+    }
+    reject_link(path)?;
+    if path.is_dir() {
+        Ok(())
+    } else {
+        ensure_dir(path)
+    }
+}
+
+/// Open a bounded-reader input without waiting for a FIFO or following a final
+/// symlink. Callers separately validate parent containment where required.
+pub fn open_regular(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "input is a reparse point",
+            ));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "input must be a regular file",
+        ));
+    }
+    Ok(file)
 }

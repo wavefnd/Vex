@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "purpose": "Reviewed minimal Whale-shaped freestanding/PIC C ABI fixture; not Whale compiler source",
+  "sha256": {
+    "wave/vex.ws": "54058f1347f1d48d9f5e125f1b26726ac777687c818d0b86a303b8acfeb75ce7",
+    "wave/src/lib.wave": "c32acf78e9a7e24f397dcf7454b15bf56ce68f635f15b2ff047dba89639f776f",
+    "math/vex.ws": "c775c433d86b41f70d20f1554215110fb6797c13cf4bfada835e03ebf0a05e06",
+    "math/src/lib.wave": "ac3c02128b160e2ceb6f421b86a4af8da8377caebc8ebc5d8a70ded2b79e4958",
+    "math/src/value.wave": "186faddecceb6e2ad58e44b98d244674e51eb3e48c66585f430cbc2e73b53032",
+    "caller.c": "8dbe7e665d201fbd5480d13c9b7c4c23518d448c9d804f22043447e31d050b2c",
+    "caller.cpp": "eba449d4cf2053cb2c13e7fab9de04552faaf606f834ec94df1ce127c07f8731",
+    "caller.rs": "69b6e6e2af7297bb0c5220e21195b7777157924755691a453edcb6b4689987ee"
+  }
+}

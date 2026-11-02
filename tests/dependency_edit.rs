@@ -119,7 +119,7 @@ fn crash_recovery_is_readonly_until_normal_command() {
         let modified = f.pair();
         check(
             f.app()
-                .args(["metadata", "--format-version", "2"])
+                .args(["metadata", "--format-version", "3"])
                 .output()
                 .unwrap(),
             5,
@@ -187,4 +187,69 @@ fn cache_dry_run_preserves_message_file_contract() {
         fs::read_to_string(f.0.join("app/preview.jsonl")).unwrap(),
         "existing"
     );
+}
+
+#[test]
+fn removal_deletes_all_conditional_bindings_and_preserves_test_dependencies() {
+    let f = F::new();
+    let text = r#"{format=4,name="app",targets={bins=[{name="app",path="src/main.wave"}]},dependencies=[/*before*/{name="platform",package="dep",path="../dep",target={os="linux"}},/*middle*/{name="platform",package="dep",path="../dep",target={os="windows"}}/*after*/],test_dependencies=[{name="platform",package="dep",path="../dep"}]}"#;
+    // Test/normal alias coexistence is deliberately rejected by the manifest,
+    // so exercise independent test declarations with a different alias here.
+    let text = text.replace(
+        "test_dependencies=[{name=\"platform\"",
+        "test_dependencies=[{name=\"fixture\"",
+    );
+    fs::write(f.0.join("app/vex.ws"), text).unwrap();
+    check(
+        f.app()
+            .args(["remove", "platform", "--offline"])
+            .output()
+            .unwrap(),
+        0,
+    );
+    let (manifest, lock) = f.pair();
+    assert!(!manifest.contains("name=\"platform\""));
+    assert!(manifest.contains("name=\"fixture\""));
+    for comment in ["/*before*/", "/*middle*/", "/*after*/"] {
+        assert!(manifest.contains(comment));
+    }
+    assert!(lock.contains("fixture"));
+}
+
+#[test]
+fn metadata_fetch_guidance_preserves_the_resolver_context_and_causes() {
+    let f = F::new();
+    fs::write(f.0.join("app/vex.ws"),r#"{format=4,name="app",targets={bins=[{name="app",path="src/main.wave"}]},dependencies=[{name="dep",path="../dep"}]}"#).unwrap();
+    fs::write(
+        f.0.join("dep/vex.ws"),
+        r#"{format=4,name="dep",targets={lib={}},unknown_field=true}"#,
+    )
+    .unwrap();
+    for (name, args) in [
+        ("fetch.jsonl", vec!["fetch", "--offline"]),
+        ("metadata.jsonl", vec!["metadata", "--format-version", "2"]),
+    ] {
+        check(
+            f.app()
+                .args(["--message-file", name])
+                .args(args)
+                .output()
+                .unwrap(),
+            3,
+        );
+        let raw = fs::read_to_string(f.0.join("app").join(name)).unwrap();
+        let events = raw
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .collect::<Vec<_>>();
+        let diagnostic = events.iter().find(|v| v["event"] == "diagnostic").unwrap();
+        assert!(
+            !diagnostic["context"].as_array().unwrap().is_empty(),
+            "{raw}"
+        );
+        assert!(
+            !diagnostic["causes"].as_array().unwrap().is_empty(),
+            "{raw}"
+        );
+    }
 }

@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vex metadata v3",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "root",
+    "packages",
+    "target_directory"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "root": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/package"
+        },
+        {
+          "$ref": "#/$defs/workspace"
+        }
+      ]
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/package"
+      }
+    },
+    "target_directory": {
+      "type": "string"
+    },
+    "selection": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "selected_features": {
+      "type": "object"
+    },
+    "union_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "selections": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "workspace_members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/package"
+      }
+    },
+    "build_directory": {
+      "type": "string"
+    },
+    "state_directory": {
+      "type": "string"
+    },
+    "toolchain_lock": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "package": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "root",
+        "manifest_path",
+        "dependencies",
+        "manifest_format",
+        "compiler",
+        "targets",
+        "default_run",
+        "profiles",
+        "build_target",
+        "target_config"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "manifest_format": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "compiler": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "path",
+                "git"
+              ]
+            }
+          }
+        },
+        "native": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "output": {
+              "enum": [
+                "object",
+                "shared",
+                null
+              ]
+            },
+            "exports": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "uniqueItems": true
+            },
+            "libraries": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "search_paths": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/target"
+          }
+        },
+        "default_run": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profiles": {
+          "type": "object",
+          "required": [
+            "dev",
+            "release"
+          ],
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "opt_level",
+              "inherits"
+            ],
+            "properties": {
+              "opt_level": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              },
+              "inherits": {
+                "enum": [
+                  "dev",
+                  "release",
+                  null
+                ]
+              }
+            }
+          }
+        },
+        "build_target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_config": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "triple",
+              "sysroot",
+              "linker",
+              "bins"
+            ],
+            "properties": {
+              "triple": {
+                "type": "string"
+              },
+              "sysroot": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "linker": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bins": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "platform"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "platform": {
+                      "$ref": "#/$defs/platform"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "binding": {
+          "type": "string"
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "entry_path",
+              "platform"
+            ]
+          }
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "required": [
+        "mode",
+        "entry",
+        "startup",
+        "linker_script"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "hosted",
+            "freestanding",
+            "wasi",
+            "bare_wasm",
+            null
+          ]
+        },
+        "entry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startup": {
+          "enum": [
+            "default",
+            "none",
+            null
+          ]
+        },
+        "linker_script": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "name",
+        "kind",
+        "entry_path",
+        "output",
+        "exports",
+        "platform"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "library",
+            "binary"
+          ]
+        },
+        "entry_path": {
+          "type": "string"
+        },
+        "output": {
+          "enum": [
+            "object",
+            "shared",
+            null
+          ]
+        },
+        "exports": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": [
+        "kind",
+        "root",
+        "manifest_path",
+        "members",
+        "default_members"
+      ],
+      "properties": {
+        "kind": {
+          "const": "workspace"
+        },
+        "root": {
+          "type": "string"
+        },
+        "manifest_path": {
+          "type": "string"
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -11,7 +11,7 @@ use std::path::Path;
 pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Result<(), Error> {
     if matches!(args, [help] if help == "-h" || help == "--help") {
         diagnostic::outln!(
-            "usage: vex metadata [--format=json] [--format-version <1|2>] [--locked] [--offline]"
+            "usage: vex metadata [--format=json] [--format-version <1|2|3>] [--locked] [--offline]"
         );
         return Ok(());
     }
@@ -41,6 +41,11 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
     let root = project.owner.source_path.parent().unwrap();
     json_path(root)?;
     let manifest = project.primary();
+    if manifest.format >= 5 && format_version < 3 {
+        return Err(Error::resolution(
+            "manifest format 5 requires metadata --format-version 3",
+        ));
+    }
     if format_version == 1 {
         require_single_target(&manifest)?;
     }
@@ -85,8 +90,16 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
         if format_version >= 2 {
             value["dependency_declarations"] = json!(package.edges);
         }
-        if package.id.is_some() {
-            value["id"] = json!(package.id);
+        if format_version >= 3 || package.id.is_some() {
+            value["id"] = json!(package
+                .id
+                .clone()
+                .unwrap_or_else(|| lockfile::package_identity(
+                    package.package_name(),
+                    &package.version,
+                    &package.source,
+                    package.subdir.as_deref()
+                )));
             value["alias"] = json!(package.import_name());
             value["binding"] = json!(package.name);
         }
@@ -107,6 +120,9 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
     } else {
         let mut value = package_record(&manifest, root, &project.manifest_path, format_version)?;
         value["dependencies"] = json!(resolution.root_dependencies());
+        if format_version >= 3 {
+            value["id"] = json!(resolver::root_identity(&resolution.root_records()[0]));
+        }
         if format_version >= 2 {
             value["dependency_declarations"] = json!(resolution.root_records()[0].edges);
         }
@@ -116,7 +132,7 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
     if project.workspace {
         for member in &project.members {
             let directory = member.source_path.parent().unwrap();
-            let mut value = package_record(member, directory, &member.source_path, 2)?;
+            let mut value = package_record(member, directory, &member.source_path, format_version)?;
             let key = resolver::manifest_key(&member.source_path)?;
             let selected = project
                 .selected
@@ -145,7 +161,13 @@ pub fn metadata(args: &[String], selection: &crate::project::Selection) -> Resul
     let value: Value = json!({"schema_version":format_version,"root":root_record,
         "selected_features":resolution.selected_features(), "selection":if resolution.views().len() == 1 { Some(resolution.selection()) } else { None }, "selections":selections,
         "workspace_members":members,"union_bindings":union,
-        "target_directory":json_path(&root.join("target"))?, "packages":packages});
+        "target_directory":json_path(&state::layout::build_root(root).join("target"))?, "packages":packages});
+    let mut value = value;
+    if format_version >= 3 {
+        value["build_directory"] = json!(json_path(&state::layout::build_root(root))?);
+        value["state_directory"] = json!(json_path(&state::layout::dependency(root, ".vex"))?);
+        value["toolchain_lock"] = compiler::identity::read(root)?.unwrap_or(Value::Null);
+    }
     diagnostic::outln!(
         "{}",
         serde_json::to_string_pretty(&value).map_err(Error::internal)?
@@ -176,7 +198,8 @@ fn parse_version(value: Option<&str>, selected: &mut Option<u32>) -> Result<(), 
     *selected = Some(match value {
         Some("1") => 1,
         Some("2") => 2,
-        _ => return Err(Error::usage("--format-version requires 1 or 2")),
+        Some("3") => 3,
+        _ => return Err(Error::usage("--format-version requires 1, 2 or 3")),
     });
     Ok(())
 }
@@ -197,6 +220,11 @@ fn package_record(
     manifest_path: &Path,
     version: u32,
 ) -> Result<Value, Error> {
+    if manifest.format >= 5 && version < 3 {
+        return Err(Error::resolution(
+            "manifest format 5 requires metadata --format-version 3",
+        ));
+    }
     let mut dependencies: Vec<_> = manifest
         .dependencies
         .iter()
@@ -207,6 +235,10 @@ fn package_record(
         "manifest_format":manifest.format, "compiler":manifest.compiler,
         "root":json_path(root)?, "manifest_path":json_path(manifest_path)?,
         "native":crate::native::configuration(manifest), "dependencies":dependencies});
+    if version >= 3 {
+        value["reproducible"] = json!(manifest.reproducible);
+        value["archiver"] = json!(manifest.archiver);
+    }
     if version >= 2 {
         value["features"] = json!(manifest.features);
     }
@@ -246,11 +278,11 @@ fn package_record(
                     Ok(json!({"name":target.name, "kind":kind_name(target.kind),
                 "entry_path":json_path(&root.join(&target.path))?,
                 "output":target.output.map(|output| output.as_str()), "exports":target.exports,
-                "platform":platform_record(&target.platform)?}))
+                "platform":platform_record(&target.platform)?,"relocation":target.platform.relocation}))
                 })
                 .collect::<Result<_, Error>>()?,
         );
-        value["tests"] = Value::Array(manifest.tests.iter().map(|target| Ok(json!({"name":target.name,"entry_path":json_path(&root.join(&target.path))?,"platform":platform_record(&target.platform)?}))).collect::<Result<_,Error>>()?);
+        value["tests"] = Value::Array(manifest.tests.iter().map(|target| Ok(json!({"name":target.name,"entry_path":json_path(&root.join(&target.path))?,"platform":platform_record(&target.platform)?,"relocation":target.platform.relocation}))).collect::<Result<_,Error>>()?);
         value["default_run"] = json!(manifest.default_run);
         value["profiles"] = json!(manifest
             .profiles
@@ -266,6 +298,7 @@ fn package_record(
         value["target_config"] = Value::Array(manifest.target_config.iter().map(|config| {
             Ok(json!({"triple":config.triple,
                 "sysroot":config.sysroot.as_deref().map(json_path).transpose()?, "linker":config.linker,
+                "library":config.library.as_ref().map(platform_record).transpose()?,"archiver":config.archiver,
                 "bins":config.bins.iter().map(|bin| Ok(json!({"name":bin.name,"platform":platform_record(&bin.platform)?})))
                     .collect::<Result<Vec<_>, Error>>()?}))
         }).collect::<Result<_, Error>>()?);
@@ -275,7 +308,7 @@ fn package_record(
 
 fn platform_record(platform: &PlatformSettings) -> Result<Value, Error> {
     Ok(
-        json!({"mode":platform.mode.map(|mode| mode.as_str()), "entry":platform.entry,
+        json!({"mode":platform.mode.map(|mode| mode.as_str()), "relocation":platform.relocation, "entry":platform.entry,
         "startup":platform.startup.map(|startup| startup.as_str()),
         "linker_script":platform.linker_script.as_deref().map(json_path).transpose()?}),
     )

@@ -74,6 +74,10 @@ fn runner_program(program: &str) -> Result<PathBuf, Error> {
 
 /// A validated compiler plan. Constructing it does not create build outputs.
 pub struct PreparedBuild {
+    context: crate::Compiler,
+    metadata: serde_json::Value,
+    archive: Option<crate::archive::ArchivePlan>,
+    inputs: Option<crate::provenance::Inputs>,
     freshness: Option<(String, String, crate::freshness::Inputs)>,
     plan: serde_json::Value,
     args: Vec<String>,
@@ -84,6 +88,72 @@ pub struct PreparedBuild {
     generation: Option<PathBuf>,
 }
 impl PreparedBuild {
+    pub fn metadata(&self) -> &serde_json::Value {
+        &self.metadata
+    }
+    pub fn with_inputs(mut self, inputs: crate::provenance::Inputs) -> Result<Self, Error> {
+        let project = std::env::current_dir().map_err(Error::environment)?;
+        let mut roots = vec![(project, "/vex/workspace".into())];
+        if let Some(nodes) = self.metadata["source_roots"].as_array() {
+            for node in nodes {
+                roots.push((
+                    PathBuf::from(
+                        node["root"]
+                            .as_str()
+                            .ok_or_else(|| Error::internal("source root missing"))?,
+                    ),
+                    format!(
+                        "/vex/packages/{}",
+                        node["id"]
+                            .as_str()
+                            .ok_or_else(|| Error::internal("source identity missing"))?
+                    ),
+                ));
+            }
+        }
+        roots.push((
+            self.context
+                .path()
+                .canonicalize()
+                .map_err(Error::environment)?,
+            "/vex/compiler".into(),
+        ));
+        if let Some(archive) = &self.archive {
+            roots.push((
+                archive.program.canonicalize().map_err(Error::environment)?,
+                "/vex/archiver".into(),
+            ));
+        }
+        if let Some(root) = self.context.selected_standard() {
+            roots.push((root.into(), "/vex/std".into()));
+        }
+        self.metadata["portable_inputs"] = match inputs.portable(&roots) {
+            Ok(value) => value,
+            Err(e) if self.metadata["settings"]["reproducible"] == true => return Err(e),
+            Err(e) => serde_json::json!({"complete":false,"reason":e.to_string()}),
+        };
+        self.metadata["inputs"] = inputs.value();
+        self.inputs = Some(inputs);
+        Ok(self)
+    }
+    pub fn with_archive(mut self, archive: Option<crate::archive::ArchivePlan>) -> Self {
+        if let Some(archive) = archive {
+            self.plan["vex_archive"] = archive.value(&self.outputs);
+            self.outputs.push(archive.output.clone());
+            self.archive = Some(archive);
+        }
+        self
+    }
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
+    pub fn result_key(&self) -> Result<String, Error> {
+        let mut paths = self.outputs.clone();
+        paths.extend(self.optional_outputs.clone());
+        crate::publication::key(&paths, &self.root)
+    }
+
     pub fn with_fingerprint(
         mut self,
         base: &str,
@@ -128,6 +198,10 @@ impl PreparedBuild {
         decision: &mut dyn FnMut(String),
     ) -> Result<Option<Execution>, Error> {
         let Self {
+            context,
+            mut metadata,
+            archive,
+            inputs: captured_inputs,
             freshness,
             plan,
             args,
@@ -137,17 +211,76 @@ impl PreparedBuild {
             execution,
             generation,
         } = self;
+        let _ = compiler;
+        let compiler = &context;
         let wavec = &compiler.path;
-        state::ensure_dir(Path::new("target")).map_err(Error::environment)?;
+        state::ensure_tree(&root.join("target")).map_err(Error::environment)?;
         let mut compile_args: Vec<_> = args[..]
             .iter()
             .filter(|a| a.as_str() != "--run")
             .cloned()
             .collect();
+        crate::publication::recover(&root, false)?;
+        let _final_preflight = state::artifacts::Batch::prepare_with_optional(
+            &root,
+            outputs.clone(),
+            optional_outputs.clone(),
+        )
+        .map_err(Error::environment)?;
+        let (publication_generation, _publication_lease) =
+            if generation.is_none() && !outputs.is_empty() {
+                let path = create_run_generation()?;
+                let lease =
+                    state::artifacts::RunLease::create(&root, &path).map_err(Error::environment)?;
+                (Some(path), Some(lease))
+            } else {
+                (None, None)
+            };
+        let final_outputs = outputs;
+        let final_optional = optional_outputs;
+        let map_output = |path: &Path| -> Result<PathBuf, Error> {
+            if let Some(stage) = &publication_generation {
+                let absolute = root.join(path);
+                let relative =
+                    state::layout::relative_output(&root, &absolute).map_err(Error::environment)?;
+                Ok(root.join(stage).join("artifacts").join(relative))
+            } else {
+                Ok(path.to_path_buf())
+            }
+        };
+        let outputs = final_outputs
+            .iter()
+            .map(|p| map_output(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let optional_outputs = final_optional
+            .iter()
+            .map(|p| map_output(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        if publication_generation.is_some() {
+            let mut next_output = false;
+            for arg in &mut compile_args {
+                if next_output {
+                    *arg = map_output(Path::new(arg))?
+                        .to_str()
+                        .ok_or_else(|| Error::resolution("output path is not UTF-8"))?
+                        .to_owned();
+                    next_output = false;
+                } else if arg == "-o" {
+                    next_output = true;
+                } else if let Some(path) = arg.strip_prefix("--target-dir=") {
+                    *arg = format!("--target-dir={}", map_output(Path::new(path))?.display());
+                }
+            }
+        }
+        let compiler_count = outputs.len() - usize::from(archive.is_some());
+        let archive_output = archive
+            .as_ref()
+            .map(|a| map_output(&a.output))
+            .transpose()?;
         let ownership = state::artifacts::Batch::prepare_with_optional(
             &root,
             outputs.clone(),
-            optional_outputs.iter().cloned(),
+            optional_outputs.clone(),
         )
         .map_err(Error::environment)?;
         let reused = match freshness.as_ref() {
@@ -186,9 +319,12 @@ impl PreparedBuild {
             let result = (|| -> Result<ExitStatus, Error> {
                 let status = if let Some(sink) = report.as_mut() {
                     insert_build_flag(&mut compile_args, "--error-format=json");
-                    let output =
-                        process::output_without_deadline(Command::new(wavec).args(&compile_args))
-                            .map_err(Error::environment)?;
+                    let output = process::output_with_input(
+                        compiler.build_command().args(&compile_args),
+                        None,
+                        compiler.input.as_deref(),
+                    )
+                    .map_err(Error::environment)?;
                     diagnostic::output::stdout(format_args!(
                         "{}",
                         String::from_utf8_lossy(&output.stdout)
@@ -202,19 +338,26 @@ impl PreparedBuild {
                     emit_diagnostics(&output.stderr, &mut **sink)?;
                     output.status
                 } else {
-                    process::status(Command::new(wavec).args(&compile_args), None, false).map_err(
-                        |e| {
-                            Error::environment(format!(
-                                "failed to execute `{}` build: {e}",
-                                wavec.display()
-                            ))
-                        },
-                    )?
+                    process::status_with_input(
+                        compiler.build_command().args(&compile_args),
+                        None,
+                        false,
+                        compiler.input.as_deref(),
+                    )
+                    .map_err(|e| {
+                        Error::environment(format!(
+                            "failed to execute `{}` build: {e}",
+                            wavec.display()
+                        ))
+                    })?
                 };
                 Ok(status)
             })();
             result.and_then(|status| {
                 if status.success() {
+                    if let (Some(archive), Some(destination)) = (&archive, &archive_output) {
+                        archive.execute(&outputs[..compiler_count], destination)?;
+                    }
                     ownership.verify_outputs().map_err(Error::compiler)
                 } else {
                     Err(compiler_error(
@@ -225,6 +368,39 @@ impl PreparedBuild {
             })
         };
         finish_compilation(compile_result, ownership.finish())?;
+        if let Some(inputs) = &captured_inputs {
+            inputs.verify()?;
+        }
+        // A pinned pair must still match after compilation, before publication.
+        let mut verified = context.clone();
+        if let Some(before) = context.identity() {
+            if verified.observe_identity()? != *before {
+                return Err(Error::resolution("compiler/std pair changed while compilation was in progress; previous generation preserved"));
+            }
+        }
+        verified.validate_identity(&std::env::current_dir().map_err(Error::environment)?)?;
+        if let Some(stage) = publication_generation.as_ref().or(generation.as_ref()) {
+            if let Some(archive) = &archive {
+                metadata["archive"] = archive.value(&final_outputs[..compiler_count]);
+            }
+            metadata["compiler"]=verified.identity().cloned().unwrap_or_else(||serde_json::json!({"compiler_sha256":crate::identity::file_digest(compiler.path()).ok(),"std_sha256":null,"identity_complete":false}));
+            let mut destinations = final_outputs.clone();
+            destinations.extend(final_optional.clone());
+            let mut staged = outputs.clone();
+            staged.extend(optional_outputs.clone());
+            let result = crate::publication::publish(
+                &root,
+                &root.join(stage),
+                &destinations,
+                &staged,
+                metadata.clone(),
+            )?;
+            if let Some(sink) = report.as_mut() {
+                sink(
+                    serde_json::json!({"event":"artifact-result","origin":"vex","result":result}),
+                )?;
+            }
+        }
         if !reused {
             if let Some((key, base, inputs)) = freshness.as_ref() {
                 if inputs.fingerprint().as_deref() == Ok(base.as_str())
@@ -243,7 +419,9 @@ impl PreparedBuild {
             }
         }
         if let Some(sink) = report.as_mut() {
-            let mut outputs: Vec<_> = if let Some(output) = plan["link"]["output"].as_str() {
+            let mut outputs: Vec<_> = if let Some(archive) = &archive {
+                vec![archive.output.to_string_lossy().into_owned()]
+            } else if let Some(output) = plan["link"]["output"].as_str() {
                 vec![output.to_owned()]
             } else {
                 plan["compile"]
@@ -254,7 +432,7 @@ impl PreparedBuild {
                     .collect()
             };
             outputs.extend(
-                optional_outputs
+                final_optional
                     .iter()
                     .filter(|path| path.is_file())
                     .map(|path| path.to_string_lossy().into_owned()),
@@ -305,8 +483,7 @@ pub fn prepare_build(
         insert_build_flag(&mut dry_run_args, "--dry-run");
     }
     insert_build_flag(&mut dry_run_args, "--error-format=json");
-    let wavec = &compiler.path;
-    let validation_output = run_wavec_dry_run(wavec, &dry_run_args, &mut report)?;
+    let validation_output = run_wavec_dry_run(compiler, &dry_run_args, &mut report)?;
     let mut plan = plan::validate_dry_run_json_output(&validation_output.stdout, &validation_output.stderr)
         .map_err(|error| Error::compiler(format!("installed wavec is incompatible with Vex: {error}\nhelp: update wavec or set VEX_WAVEC=/path/to/wavec")))?;
     if !validation_output.stderr.is_empty() {
@@ -315,8 +492,31 @@ pub fn prepare_build(
             String::from_utf8_lossy(&validation_output.stderr)
         ))?;
     }
+    if let Some(input) = compiler.input.as_ref() {
+        let expected: serde_json::Value = serde_json::from_slice(input).map_err(Error::internal)?;
+        if plan["package_graph"] != expected {
+            return Err(Error::compiler(
+                "compiler plan did not retain the selected package graph",
+            ));
+        }
+    }
     let root = std::env::current_dir().map_err(Error::environment)?;
     let separator = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let requested = args[..separator].iter().enumerate().find_map(|(i, arg)| {
+        arg.strip_prefix("--target=").or_else(|| {
+            (arg == "--target")
+                .then(|| args.get(i + 1).map(String::as_str))
+                .flatten()
+        })
+    });
+    if let Some(requested) = requested {
+        if plan["target"].as_str() != Some(requested) {
+            return Err(Error::compiler(format!(
+                "compiler target mismatch: requested `{requested}`, returned `{}`",
+                plan["target"].as_str().unwrap_or("<missing>")
+            )));
+        }
+    }
     let is_run = args[..separator].iter().any(|a| a == "--run");
     let execution = if is_run {
         let generation =
@@ -388,7 +588,7 @@ pub fn prepare_build(
     } else {
         None
     };
-    let root = std::env::current_dir().map_err(Error::environment)?;
+    let root = state::layout::build_root(&std::env::current_dir().map_err(Error::environment)?);
     let (outputs, optional_outputs) = validate_plan_outputs(&plan, &root, &args[..separator])?;
     validate_requested_outputs(&plan, &root, &args[..separator])?;
     if user_requested_dry_run && !runtime.is_empty() {
@@ -406,6 +606,10 @@ pub fn prepare_build(
         args.extend(values.into_iter().map(serde_json::Value::String));
     }
     Ok(PreparedBuild {
+        context: compiler.clone(),
+        metadata: serde_json::json!({}),
+        archive: None,
+        inputs: None,
         freshness: None,
         plan,
         args: args[..separator].to_vec(),
@@ -709,8 +913,13 @@ fn validate_output_path(output: &Path, generation: &Path) -> Result<(), Error> {
 }
 
 pub fn create_run_generation() -> Result<PathBuf, Error> {
-    state::ensure_dir(Path::new("target")).map_err(Error::environment)?;
-    let parent = Path::new("target/.vex-run");
+    let root = state::layout::build_root(&std::env::current_dir().map_err(Error::environment)?);
+    state::ensure_tree(&root.join("target")).map_err(Error::environment)?;
+    let parent_path = state::layout::output(
+        &std::env::current_dir().map_err(Error::environment)?,
+        "target/.vex-run",
+    );
+    let parent = parent_path.as_path();
     state::ensure_dir(parent).map_err(Error::environment)?;
     loop {
         let time = std::time::SystemTime::now()
@@ -786,18 +995,19 @@ fn emit_diagnostics(
 }
 
 fn run_wavec_dry_run(
-    wavec: &Path,
+    compiler: &crate::Compiler,
     dry_run_args: &[String],
     report: &mut Option<&mut dyn FnMut(serde_json::Value) -> Result<(), Error>>,
 ) -> Result<DryRunOutput, Error> {
-    let output = process::output(
-        Command::new(wavec).args(dry_run_args),
-        std::time::Duration::from_secs(60),
+    let output = process::output_with_input(
+        compiler.build_command().args(dry_run_args),
+        Some(std::time::Duration::from_secs(60)),
+        compiler.input.as_deref(),
     )
     .map_err(|error| {
         Error::environment(format!(
             "failed to execute `{}`. Install wavec or set VEX_WAVEC=/path/to/wavec: {error}",
-            wavec.display()
+            compiler.path.display()
         ))
     })?;
     if let Some(sink) = report.as_mut() {
@@ -808,7 +1018,7 @@ fn run_wavec_dry_run(
             output.status,
             format!(
                 "wavec dry-run failed using `{}` [{}]: {}",
-                wavec.display(),
+                compiler.path.display(),
                 classify_exit(output.status),
                 combined_output(&output.stdout, &output.stderr)
             ),

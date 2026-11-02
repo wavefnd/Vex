@@ -25,7 +25,7 @@ def run(command, cwd, env, expected=0, *, native_tool=False):
     if env.get("VEX_TEST_TARGET_RUNNER") and not native_tool:
         command.insert(0, env["VEX_TEST_TARGET_RUNNER"])
     print("$", " ".join(command), flush=True)
-    result = subprocess.run(command, cwd=cwd, env=env, text=True,
+    result = subprocess.run(command, cwd=cwd, env=env, text=True, encoding="utf-8",
                             capture_output=True, timeout=300)
     print(result.stdout, end="", flush=True)
     print(result.stderr, end="", flush=True)
@@ -331,6 +331,55 @@ def format_three_exports(vex, root, tools, spec):
             raise RuntimeError("format 3 native output selection changed vex.lock")
 
 
+def static_exports(vex, root, tools, spec):
+    project = root / "static exports é"
+    (project / "src").mkdir(parents=True)
+    (project / "src/lib.wave").write_text(
+        'export(c) fun wave_add(a:i32,b:i32)->i32{return a+b;}\n', encoding='utf-8')
+    archiver = os.environ.get('VEX_TEST_ARCHIVER')
+    if not archiver and tools.windows:
+        candidates = [shutil.which('llvm-lib.exe', path=tools.env['PATH']),
+                      str(Path(tools.env.get('PROGRAMFILES', r'C:\Program Files')) / 'LLVM/bin/llvm-lib.exe')]
+        archiver = next((p for p in candidates if p and Path(p).is_file()), None)
+        if not archiver:
+            raise RuntimeError('COFF static acceptance requires llvm-lib.exe')
+    if not archiver and spec['object_format'] == 'macho':
+        archiver = shutil.which('llvm-ar', path=tools.env['PATH'])
+        if not archiver:
+            prefix = run(['brew', '--prefix', 'llvm@18'], root, tools.env, native_tool=True).stdout.strip()
+            archiver = str(Path(prefix) / 'bin/llvm-ar')
+    library = dict(output='static', mode='freestanding')
+    if spec['object_format'] in {'elf', 'macho'}:
+        library['relocation'] = 'pic'
+    manifest = dict(format=5, name='wave_static', targets=dict(lib=library))
+    if archiver:
+        manifest['build'] = dict(archiver=archiver)
+    (project/'vex.ws').write_text(wson(manifest)+'\n', encoding='utf-8')
+    run([vex, 'fetch', '--offline'], project, tools.env)
+    for profile in ['dev', 'release']:
+        run([vex, 'build', '--profile', profile, '--locked', '--offline'], project, tools.env)
+        name = 'wave_static.lib' if tools.windows else 'libwave_static.a'
+        archive = project/'target'/spec['triple']/profile/'lib'/name
+        if archive.read_bytes()[:8] != b'!<arch>\n':
+            raise RuntimeError('static output is not a real archive')
+        consumer = root/('static '+profile+' consumer')
+        consumer.mkdir()
+        tools.consume(consumer, archive)
+        cpp = consumer/'cpp.cpp'
+        cpp.write_text('extern "C" int wave_add(int,int); int main(){return wave_add(20,22)==42?0:1;}\n', encoding='utf-8')
+        exe = consumer/('cpp.exe' if tools.windows else 'cpp')
+        if tools.windows:
+            run([tools.cxx, '/nologo', '/MD', cpp, archive, '/Fe'+str(exe)], consumer, tools.env)
+        else:
+            run([tools.cxx, cpp, archive, '-o', exe], consumer, tools.env, native_tool=True)
+        run([exe], consumer, tools.env)
+        rust = consumer/'caller.rs'
+        rust.write_text('unsafe extern "C" { fn wave_add(a:i32,b:i32)->i32; } fn main(){assert_eq!(unsafe{wave_add(20,22)},42);}\n', encoding='utf-8')
+        exe = consumer/('rust.exe' if tools.windows else 'rust')
+        run([tools.rustc, '--edition=2021', rust, '-C', 'link-arg='+str(archive), '-o', exe], consumer, tools.env, native_tool=True)
+        run([exe], consumer, tools.env)
+
+
 def archive_order(vex, root, tools):
     """A name/path mix must preserve the manifest's static-library order."""
     project = root / "library order"
@@ -383,6 +432,7 @@ def main():
         archive_order(vex, root, tools)
         outbound(vex, root, tools, spec)
         format_three_exports(vex, root, tools, spec)
+        static_exports(vex, root, tools, spec)
         print("Native C/C++/Rust inputs and legacy/format 3 Wave object/shared consumers passed.", flush=True)
 
 

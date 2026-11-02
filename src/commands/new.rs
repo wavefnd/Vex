@@ -68,9 +68,7 @@ pub fn new(args: &[String]) -> Result<(), Error> {
     let result = (|| {
         std::env::set_current_dir(&stage)?;
         let guard = state::Guard::acquire(false, crate::ui::status).map_err(Error::environment)?;
-        let manifest = manifest::render_new_manifest(name, "unknown", library)
-            .replacen("format = 3", "format = 4", 1)
-            .replacen("version = 0.1.0", "version = \"0.1.0\"", 1);
+        let manifest = manifest::render_new_manifest(name, "unknown", library);
         let source = if library {
             "pub fun greet() {\n    println(\"Hello from library\");\n}\n"
         } else {

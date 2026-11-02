@@ -93,6 +93,8 @@ pub struct Manifest {
     pub default_run: Option<String>,
     pub profiles: BTreeMap<String, BuildProfile>,
     pub build_target: Option<String>,
+    pub reproducible: bool,
+    pub archiver: Option<String>,
     pub target_config: Vec<TargetConfig>,
     pub description: Option<String>,
     pub author: Option<String>,
@@ -223,6 +225,16 @@ impl Manifest {
             })
         {
             platform.overlay(&overrides.platform);
+        }
+        if target.kind == TargetKind::Library {
+            if let Some(library) = self
+                .target_config
+                .iter()
+                .find(|c| c.triple == triple)
+                .and_then(|c| c.library.as_ref())
+            {
+                platform.overlay(library);
+            }
         }
         platform
     }

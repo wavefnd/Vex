@@ -1,0 +1,47 @@
+# Derived from MAINTAINERS. Update both in the same pull request.
+# Review requests only; repository rules are configured separately.
+* @LunaStev
+
+# CLI and Commands
+/src/ @LunaStev
+
+# Manifest, WSON and Lockfile
+/manifest/ @LunaStev
+/wson/ @LunaStev
+/lockfile/ @LunaStev
+
+# Dependency Resolution and Git
+/resolver/ @LunaStev
+/source/ @LunaStev
+
+# Compiler and Toolchain Integration
+/compiler/ @LunaStev
+/toolchain/ @LunaStev
+/process/ @LunaStev
+/diagnostic/ @LunaStev
+
+# Project State and Artifacts
+/state/ @LunaStev
+
+# Tests and Examples
+/tests/ @LunaStev
+/examples/ @LunaStev
+
+# Release and CI
+/.github/ @LunaStev
+/Cargo.toml @LunaStev
+/Cargo.lock @LunaStev
+/rust-toolchain.toml @LunaStev
+/meson.build @LunaStev
+/meson.options @LunaStev
+/platforms.json @LunaStev
+/tools/ @LunaStev
+/RELEASING.md @LunaStev
+
+# Documentation and Community
+/*.md @LunaStev
+/docs/ @LunaStev
+/MAINTAINERS @LunaStev
+/COPYRIGHT @LunaStev
+/NOTICE @LunaStev
+/ai.txt @LunaStev

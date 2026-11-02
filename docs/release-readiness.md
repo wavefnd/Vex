@@ -1,7 +1,11 @@
-# Unreleased: targets, profiles, and format migration
+# Unreleased: v0.0.3-beta integration
 
 This describes the development branch, not an already published Vex release.
-No release version or tag is assigned by this change.
+The planned version is `0.0.3-beta`; no tag or release is created by this text.
+
+The current storage, archive, pin, graph and publication contracts are in
+[external builds](external-builds.md). Existing public-compiler acceptance remains
+mandatory; new Wave capability gates await a compatible public artifact.
 
 ## Compatibility window
 
@@ -10,12 +14,15 @@ No release version or tag is assigned by this change.
 | Manifest without `format`, or format 1 | Literal backslashes | Same | Same |
 | Manifest format 2 | JSON string escapes | Same | Same |
 | Manifest format 3 | Explicit package targets/profiles; JSON string escapes | Same; no manifest rewrite | Same |
-| Lockfile v1 | Resolve and migrate to v3 | Reject unchanged | Migrate only from locally available sources |
-| Lockfile v2 | Read legacy strings; successful resolution may migrate to v3 | Preserve bytes if graph matches | Never fetch; migration still allowed without `--locked` |
-| Lockfile v3 | Read/write escaped strings | Preserve bytes if graph matches | Never fetch |
+| Lockfile v1 | Resolve and migrate to the selected manifest graph format | Reject unchanged | Migrate only from locally available sources |
+| Lockfile v2 | Read legacy strings; successful resolution may migrate to the selected manifest graph format | Preserve bytes if graph matches | Never fetch; migration still allowed without `--locked` |
+| Manifest format 4 | SemVer, aliases, features and user workspaces | Same; no rewrite | Same |
+| Manifest format 5 | External build integration and library settings | Same; no rewrite | Same |
+| Lockfile v4 | Union graph, concrete IDs and escaped strings | Preserve bytes if graph matches | Never fetch |
+| Lockfile v3 | Read escaped strings; normal resolution may migrate | Preserve bytes if graph matches | Never fetch |
 | Unknown format or malformed graph | Error; preserve file | Error; preserve file | Error; preserve file |
 
-Older Vex binaries do not understand manifest format 2 or lockfile v3. Upgrade
+Older Vex binaries may not understand manifest format 5 or lockfile v4. Upgrade
 collaborators before committing a migrated lockfile. Existing manifests are never
 automatically rewritten. To opt into escaped strings, add `format = 2` and encode
 each existing string's actual value, rather than guessing what backslashes meant.
@@ -26,7 +33,7 @@ The new shared WSON boundary recognizes comments and delimiters only outside
 strings. It preserves URL fragments and former sentinel text, rejects duplicate
 keys, and reports parser source locations. Unsupported versioned escapes fail
 before graph publication. Package version strings retain their existing meaning;
-format versions do not introduce SemVer dependency requirements or a registry.
+formats 4/5 introduce explicit SemVer requirements without a registry.
 
 ## Target/profile migration (#46, #47, #48, #54)
 
@@ -34,7 +41,7 @@ Manifest format 3 opts into an explicit library and named binaries, root profile
 default run selection, and exact-triple build settings. Legacy formats retain
 their meaning, and are not rewritten. Use `targets.lib` instead of root `lib`,
 and put library output/exports there instead of `native`. Keep native inputs in
-root `native`. Lockfile v3 retains its source, commit and edge meanings.
+root `native`. Historical lockfile v3 retains its source, commit and edge meanings.
 
 All manifests now produce ordinary/native outputs under
 `target/<compiler-triple>/<profile>/{bin,lib}/`, with isolated intermediate objects.
@@ -46,7 +53,7 @@ generations and releases the build lock before starting the program.
 profiles have optimization levels 0–3 and inherit only dev or release. Build/check
 default to all root targets; run requires an unambiguous binary choice.
 
-Dry-run stdout changes for every project: it is one `vex.build-plan` schema-1
+Dry-run stdout changes for every project: it is one `vex.build-plan` schema-2
 JSON envelope, containing the profile and target-specific compiler plans, rather
 than a direct compiler plan. Consumers must update their readers. Metadata keeps
 schema 1 as the default for single-target packages; a mixed/multiple-target

@@ -1,0 +1,2 @@
+import("math")::{answer};
+export(c) fun wave_answer() -> i32 { return answer(); }

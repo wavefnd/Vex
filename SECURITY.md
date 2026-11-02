@@ -2,13 +2,14 @@
 
 ## Supported versions
 
-Vex `v0.0.1` is the current public release (published 2026-08-23). Security
-fixes for that release are made on the latest `master` branch and ship in the
+Vex `v0.0.2-beta` is the current public release (published 2026-10-15). Security
+fixes for supported releases are made on the latest `master` branch and ship in the
 next published release when needed. Pre-`v0.0.1` snapshots and older commits
 are not supported.
 
 | Version | Supported |
 |---|---|
+| `v0.0.2-beta` | Yes (current) |
 | `v0.0.1` | Yes |
 | `master` | Best effort (development tip) |
 | Pre-`v0.0.1` snapshots and older commits | No |

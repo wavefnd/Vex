@@ -58,9 +58,15 @@ fn run_init(is_lib: bool) -> Result<(), Error> {
         (
             "vex.lock",
             lockfile::encode(Lockfile {
-                version: 3,
+                version: 4,
                 packages: Vec::new(),
-                roots: Vec::new(),
+                roots: vec![source::graph::Root {
+                    manifest: "vex.ws".into(),
+                    name: project_name.into(),
+                    version: "0.1.0".into(),
+                    edges: vec![],
+                    features: Default::default(),
+                }],
             }),
         ),
     ];

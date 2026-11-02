@@ -19,6 +19,7 @@ import urllib.error
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import ci_cross
+from tools.repository_checks import NATIVE_INTEROP
 PLATFORMS = json.loads((ROOT / 'platforms.json').read_text())['platforms']
 WAVE_PIN = json.loads((ROOT / 'tools/wave-release.json').read_text())
 WAVE_VERSION = WAVE_PIN['version']
@@ -123,7 +124,7 @@ def main():
                   os=identity['os'], libc=identity['libc'], wave_version=WAVE_VERSION,
                   wave_release_id=release['id'], wave_asset_id=assets[0]['id'],
                   wave_archive_digest='sha256:'+WAVE_PIN['archives'][target['id']], compiler_sha256=compiler_hash,
-                  native_interop=['c', 'cpp-c-abi', 'rust-c-abi', 'wave-object', 'wave-shared'],
+                  native_interop=sorted(NATIVE_INTEROP),
                   status='passed')
     if cross:
         report.update(build_method='cross', build_host=cross['build_host'], execution_arch=identity['machine'],

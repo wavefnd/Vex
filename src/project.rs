@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 pub struct Selection {
     pub graph: source::graph::Selection,
     pub manifest_path: Option<PathBuf>,
+    pub build_dir: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
     pub packages: Vec<String>,
     pub all_packages: bool,
 }
@@ -22,6 +24,7 @@ pub struct Project {
     pub selected: Vec<Manifest>,
     pub workspace: bool,
     previous_directory: PathBuf,
+    _layout: state::layout::Scope,
 }
 impl Project {
     pub fn primary(&self) -> Manifest {
@@ -159,6 +162,12 @@ impl Selection {
                 selected_members.len()
             ));
         }
+        let storage_path =
+            |value: &Option<PathBuf>| value.as_ref().map(|p| previous_directory.join(p));
+        let build = storage_path(&self.build_dir);
+        let dependencies = storage_path(&self.state_dir);
+        let layout = state::layout::configure(root, build.as_deref(), dependencies.as_deref())
+            .map_err(Error::usage)?;
         std::env::set_current_dir(root).map_err(Error::environment)?;
         Ok(Project {
             manifest_path: if selected_members.len() == 1 {
@@ -171,6 +180,7 @@ impl Selection {
             selected: selected_members,
             workspace,
             previous_directory,
+            _layout: layout,
         })
     }
 }

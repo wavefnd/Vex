@@ -7,8 +7,8 @@ use super::*;
 use std::ops::Range;
 
 pub fn dependency(raw: &str, name: &str, addition: Option<&str>) -> Result<String, String> {
-    let map = loads_versions(raw, "format", &[2, 3, 4])?;
-    let escapes = matches!(map.get("format"), Some(WsonValue::Int(2..=4)));
+    let map = loads_versions(raw, "format", &[2, 3, 4, 5])?;
+    let escapes = matches!(map.get("format"), Some(WsonValue::Int(2..=5)));
     let mut p = Parser {
         raw,
         pos: 0,
@@ -91,24 +91,40 @@ pub fn dependency(raw: &str, name: &str, addition: Option<&str>) -> Result<Strin
         entries.push((start..end, comma, alias.clone()));
     }
     let mut result = raw.to_owned();
-    let found = entries.iter().position(|(_, _, alias)| alias == name);
-    match (addition, found) {
-        (Some(_), Some(_)) => return Err(format!("direct dependency `{name}` already exists")),
-        (Some(text), None) => {
+    let found: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, _, alias))| (alias == name).then_some(i))
+        .collect();
+    match addition {
+        Some(_) if !found.is_empty() => return Err(format!("direct dependency `{name}` already exists")),
+        Some(text) => {
             result.insert_str(p.pos, &format!("\n        {text}\n    "));
             if let Some((range, None, _)) = entries.last() { result.insert(range.end, ','); }
         }
-        (None, Some(index)) => {
-            let (range, comma, _) = &entries[index];
-            if let Some(comma) = comma { result.remove(*comma); }
-            result.replace_range(range.clone(), "");
-            if comma.is_none() && index > 0 {
-                if let Some(comma) = entries[index-1].1 { result.remove(comma); }
+        None if !found.is_empty() => {
+            // Original byte coordinates remain valid when edits run backwards.
+            // Remove every conditional declaration, retaining comments outside
+            // the objects and all declarations of other aliases.
+            let mut removals = std::collections::BTreeSet::new();
+            for index in found {
+                let (range, comma, _) = &entries[index];
+                removals.insert((range.start, range.end));
+                if let Some(comma) = comma {
+                    removals.insert((*comma, comma + 1));
+                } else if index > 0 {
+                    if let Some(comma) = entries[index - 1].1 {
+                        removals.insert((comma, comma + 1));
+                    }
+                }
+            }
+            for (start, end) in removals.into_iter().rev() {
+                result.replace_range(start..end, "");
             }
         }
-        (None, None) => return Err(format!("unknown direct dependency `{name}`; transitive dependencies must be edited in their owning package")),
+        None => return Err(format!("unknown direct dependency `{name}`; transitive dependencies must be edited in their owning package")),
     }
-    loads_versions(&result, "format", &[2, 3, 4])?;
+    loads_versions(&result, "format", &[2, 3, 4, 5])?;
     Ok(result)
 }
 
@@ -127,7 +143,7 @@ mod tests {
         assert!(dependency(&removed, "one", None).is_err());
         for input in ["{}", "{name=\"app\"}", "{name=\"app\", // hi\n}"] {
             let output = dependency(input, "one", Some("{name=\"one\",path=\"a\"}")).unwrap();
-            assert!(loads_versions(&output, "format", &[2, 3, 4]).is_ok());
+            assert!(loads_versions(&output, "format", &[2, 3, 4, 5]).is_ok());
         }
     }
 }

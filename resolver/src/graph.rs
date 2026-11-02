@@ -87,6 +87,10 @@ impl<'a> Resolver<'a> {
                 return self.root.join(".vex/deps").join(suffix);
             }
         }
+        let store = state::layout::dependency(&self.root, ".vex/deps");
+        if let Ok(tail) = path.strip_prefix(store) {
+            return self.root.join(".vex/deps").join(tail);
+        }
         path.to_owned()
     }
 
@@ -400,7 +404,7 @@ impl<'a> Resolver<'a> {
                     &encoded
                 };
                 let name = target.file_name().unwrap().to_str().unwrap();
-                let live = self.root.join(target);
+                let live = state::layout::dependency(&self.root, target);
                 let locked_commit = self.pinned_commit(dependency);
                 let reuse = if let Some(commit) = locked_commit.as_ref() {
                     let checked = git::require_checkout_at(&live, url, &dependency.name, commit)
@@ -418,7 +422,7 @@ impl<'a> Resolver<'a> {
                         git::reject_dirty_checkout(&live, &dependency.name)?;
                     }
                     if let Some(previous) = previous.as_ref() {
-                        let old = self.root.join(previous);
+                        let old = state::layout::dependency(&self.root, previous);
                         if old != live && old.exists() {
                             git::reject_dirty_checkout(&old, &dependency.name)?;
                         }
@@ -434,7 +438,10 @@ impl<'a> Resolver<'a> {
                     let copy_source = if fresh {
                         None
                     } else if migration {
-                        Some(self.root.join(previous.as_ref().unwrap()))
+                        Some(state::layout::dependency(
+                            &self.root,
+                            previous.as_ref().unwrap(),
+                        ))
                     } else {
                         Some(live.clone())
                     };
@@ -759,7 +766,7 @@ impl<'a> Resolver<'a> {
                             "invalid historical managed checkout path",
                         ));
                     }
-                    let old_path = self.root.join(resolved);
+                    let old_path = state::layout::dependency(&self.root, resolved);
                     if old_path.exists() {
                         git::verify_origin(&old_path, url)?;
                         git::reject_dirty_checkout(&old_path, dependency.import_name())?;

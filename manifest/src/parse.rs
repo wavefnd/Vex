@@ -47,7 +47,7 @@ const DEPENDENCY_FIELDS: &[&str] = &[
 ];
 
 pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest, String> {
-    let data = loads_versions(raw, "format", &[2, 3, 4])
+    let data = loads_versions(raw, "format", &[2, 3, 4, 5])
         .map_err(|e| format!("failed to parse manifest: {e}"))?;
     reject_unknown_fields(&data, ROOT_FIELDS, "manifest")?;
     let format = match data.get("format") {
@@ -55,7 +55,8 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         Some(WsonValue::Int(2)) => 2,
         Some(WsonValue::Int(3)) => 3,
         Some(WsonValue::Int(4)) => 4,
-        _ => return Err("unsupported manifest format; expected 1 (legacy), 2 (escaped strings), 3 (explicit targets), or 4 (package graphs)".into()),
+        Some(WsonValue::Int(5)) => 5,
+        _ => return Err("unsupported manifest format; expected 1 (legacy), 2 (escaped strings), 3 (explicit targets), 4 (package graphs), or 5 (external builds)".into()),
     };
     if format < 3 {
         for field in [
@@ -222,7 +223,29 @@ pub(crate) fn parse_manifest(raw: &str, source_path: PathBuf) -> Result<Manifest
         ));
     }
 
+    let (reproducible, archiver) = match data.get("build") {
+        Some(WsonValue::Object(build)) => {
+            let reproducible = match build.get("reproducible") {
+                None => false,
+                Some(WsonValue::Bool(v)) => *v,
+                _ => return Err("build.reproducible must be boolean".into()),
+            };
+            let archiver = parse_optional_string(build.get("archiver"), "build.archiver")?;
+            if archiver.as_ref().is_some_and(|p| {
+                p.trim().is_empty() || p.starts_with('-') || p.chars().any(char::is_control)
+            }) {
+                return Err("archiver must be one executable name or path".into());
+            }
+            if format < 5 && (build.contains_key("reproducible") || archiver.is_some()) {
+                return Err("new build settings require format = 5".into());
+            }
+            (reproducible, archiver)
+        }
+        _ => (false, None),
+    };
     Ok(Manifest {
+        reproducible,
+        archiver,
         tests,
         workspace,
         virtual_workspace,

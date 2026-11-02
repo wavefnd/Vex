@@ -176,7 +176,10 @@ fn missing_or_nonregular_outputs_do_not_publish_artifact_success() {
     );
     assert!(!f.events().iter().any(|event| event["event"] == "artifact"));
     assert_eq!(f.events().last().unwrap()["category"], "compiler");
-    assert!(f.root.join(intermediate).is_file());
+    assert!(
+        !f.root.join(intermediate).exists(),
+        "failed compilation must not publish partial intermediate outputs"
+    );
     f.clean();
     assert!(!f.root.join(intermediate).exists());
 
@@ -193,7 +196,10 @@ fn missing_or_nonregular_outputs_do_not_publish_artifact_success() {
         f.root.join("compiled").exists(),
         "fixture must reach compilation"
     );
-    assert!(f.root.join(path).is_dir());
+    assert!(
+        !f.root.join(path).exists(),
+        "nonregular staged output must never be published"
+    );
     assert!(!f.events().iter().any(|event| event["event"] == "artifact"));
     assert_eq!(f.events().last().unwrap()["category"], "compiler");
 }
@@ -467,4 +473,401 @@ fn compiler_cannot_change_selected_artifact_kind_or_namespace() {
     escaped_intermediate["link"]["inputs"] = json!(["target/another-package.o"]);
     assert_code(&f.build(&escaped_intermediate, &[]), 4);
     assert!(!f.root.join("compiled").exists());
+}
+
+#[test]
+fn staged_failure_and_mid_publication_rollback_keep_the_last_complete_generation() {
+    let f = Fixture::new();
+    let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+    let plan = plan_object(name);
+    assert_code(&f.build(&plan, &[name]), 0);
+    let pointers = f.root.join("target/.vex-results");
+    let pointer = fs::read_dir(&pointers)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let before = fs::read(&pointer).unwrap();
+    let result: Value = serde_json::from_slice(&before).unwrap();
+    let generation = PathBuf::from(result["artifacts"][0]["path"].as_str().unwrap());
+    let good = fs::read(&generation).unwrap();
+    for (variable, value) in [
+        ("COMPILE_EXIT", "1"),
+        ("VEX_TEST_PUBLICATION_FAIL_AFTER", "0"),
+    ] {
+        let output = f
+            .command(&plan, &[name])
+            .env("ARTIFACT_BYTES", "changed artifact")
+            .env(variable, value)
+            .arg("build")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(fs::read(f.root.join(name)).unwrap(), good);
+        assert_eq!(fs::read(&generation).unwrap(), good);
+        assert_eq!(fs::read(&pointer).unwrap(), before);
+        assert!(!f.root.join(".vex/build-publication.json").exists());
+    }
+    assert_code(
+        &f.command(&plan, &[name])
+            .env("ARTIFACT_BYTES", "changed artifact")
+            .arg("build")
+            .output()
+            .unwrap(),
+        0,
+    );
+    assert_eq!(fs::read(f.root.join(name)).unwrap(), b"changed artifact");
+    assert_eq!(fs::read(generation).unwrap(), good);
+}
+
+#[test]
+fn external_roots_reports_and_toolchain_pins_preserve_source_and_owned_files() {
+    let f = Fixture::new();
+    let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+    let mut plan = plan_object(name);
+    plan["source_inputs"] = json!(["src/lib.wave"]);
+    let first = f.root.join("build one é");
+    let second = f.root.join("build two");
+    let report = f.root.join("result #$.json");
+    let depfile = f.root.join("result #$.d");
+    let standard = f.root.join("prepared std");
+    fs::create_dir(&standard).unwrap();
+    fs::write(standard.join("lib.wave"), "std input").unwrap();
+    let command = |build: &std::path::Path| {
+        let mut command = f.command(&plan, &[name]);
+        command
+            .env("MODERN_CONTRACT", "1")
+            .env("VEX_WAVE_STD", &standard)
+            .arg("--build-dir")
+            .arg(build);
+        command
+    };
+    assert_code(
+        &command(&first)
+            .args(["fetch", "--offline"])
+            .output()
+            .unwrap(),
+        0,
+    );
+    let lock = fs::read(f.root.join("vex.lock")).unwrap();
+    let build = || {
+        let mut c = command(&first);
+        c.args(["build", "--locked", "--offline", "--artifact-manifest"])
+            .arg(&report)
+            .arg("--depfile")
+            .arg(&depfile);
+        c
+    };
+    assert_code(&build().output().unwrap(), 0);
+    assert!(!f.root.join("target").exists());
+    assert!(!f.root.join(".vex").exists());
+    assert!(first.join(name).is_file());
+    let document: Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+    assert_eq!(document["schema"], "vex.artifacts");
+    assert_eq!(
+        document["results"][0]["metadata"]["compiler"]["std_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    let deps = fs::read_to_string(&depfile).unwrap();
+    assert!(deps.contains("src/lib.wave"));
+    assert!(deps.contains("vex.lock"));
+    assert!(deps.contains("prepared\\ std"));
+    let previous = fs::read(&report).unwrap();
+    let previous_depfile = fs::read(&depfile).unwrap();
+    let mtime = fs::metadata(&report).unwrap().modified().unwrap();
+    assert_code(&build().output().unwrap(), 0);
+    assert_eq!(fs::metadata(&report).unwrap().modified().unwrap(), mtime);
+    fs::write(
+        f.root.join("src/lib.wave"),
+        "fun main() {} // invalidate the fixture cache\n",
+    )
+    .unwrap();
+    let failed = build()
+        .env("ARTIFACT_BYTES", "replacement")
+        .env("VEX_TEST_REPORT_FAIL_AFTER", "0")
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert_eq!(fs::read(&report).unwrap(), previous);
+    assert_eq!(fs::read(&depfile).unwrap(), previous_depfile);
+    assert_code(
+        &command(&first)
+            .args(["toolchain", "capture"])
+            .output()
+            .unwrap(),
+        0,
+    );
+    let pinned = fs::read(f.root.join("vex.toolchain.lock")).unwrap();
+    fs::write(
+        standard.join("lib.wave"),
+        "changed std, same compiler version",
+    )
+    .unwrap();
+    let mismatch = build().output().unwrap();
+    assert_code(&mismatch, 3);
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("std_sha256"));
+    assert_eq!(fs::read(f.root.join("vex.toolchain.lock")).unwrap(), pinned);
+    assert_eq!(fs::read(f.root.join("vex.lock")).unwrap(), lock);
+    fs::write(standard.join("lib.wave"), "std input").unwrap();
+    assert_code(
+        &command(&second)
+            .args(["fetch", "--locked", "--offline"])
+            .output()
+            .unwrap(),
+        0,
+    );
+    assert_code(
+        &command(&second)
+            .args(["build", "--locked", "--offline"])
+            .output()
+            .unwrap(),
+        0,
+    );
+    assert!(second.join(name).is_file());
+    assert_code(&command(&first).arg("clean").output().unwrap(), 0);
+    assert!(second.join(name).is_file());
+    fs::write(&report, "user file").unwrap();
+    let refused = build().output().unwrap();
+    assert_code(&refused, 5);
+    assert_eq!(fs::read(&report).unwrap(), b"user file");
+}
+
+#[test]
+fn interrupted_publication_is_readonly_in_dry_run_and_recovers_on_a_normal_build() {
+    for existing in [false, true] {
+        let f = Fixture::new();
+        let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+        let plan = plan_object(name);
+        if existing {
+            assert_code(&f.build(&plan, &[name]), 0);
+        }
+        let crashed = f
+            .command(&plan, &[name])
+            .env("ARTIFACT_BYTES", "new complete generation")
+            .env("VEX_TEST_PUBLICATION_CRASH_AFTER", "0")
+            .arg("build")
+            .output()
+            .unwrap();
+        assert_code(&crashed, 97);
+        let journal = fs::read(f.root.join(".vex/build-publication.json")).unwrap();
+        let staged = fs::read(f.root.join(name)).unwrap();
+        let dry = f
+            .command(&plan, &[name])
+            .args(["build", "--dry-run"])
+            .output()
+            .unwrap();
+        assert!(!dry.status.success());
+        assert_eq!(
+            fs::read(f.root.join(".vex/build-publication.json")).unwrap(),
+            journal
+        );
+        assert_eq!(fs::read(f.root.join(name)).unwrap(), staged);
+        assert_code(&f.build(&plan, &[name]), 0);
+        assert!(!f.root.join(".vex/build-publication.json").exists());
+        assert_eq!(fs::read(f.root.join(name)).unwrap(), b"compiled artifact");
+    }
+}
+
+#[test]
+fn interrupted_report_publication_requires_writable_recovery() {
+    for existing in [false, true] {
+        let f = Fixture::new();
+        let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+        let mut plan = plan_object(name);
+        plan["source_inputs"] = json!(["src/lib.wave"]);
+        let report = f.root.join("artifacts.json");
+        let depfile = f.root.join("artifacts.d");
+        let build = || {
+            let mut c = f.command(&plan, &[name]);
+            c.env("MODERN_CONTRACT", "1")
+                .args(["build", "--artifact-manifest"])
+                .arg(&report)
+                .arg("--depfile")
+                .arg(&depfile);
+            c
+        };
+        if existing {
+            assert_code(&build().output().unwrap(), 0);
+        }
+        fs::write(f.root.join("src/lib.wave"), "fun main() {} // changed\n").unwrap();
+        let crashed = build()
+            .env("ARTIFACT_BYTES", "replacement")
+            .env("VEX_TEST_REPORT_CRASH_AFTER", "0")
+            .output()
+            .unwrap();
+        assert_code(&crashed, 97);
+        let journal_path = f.root.join(".vex/report-publication.json");
+        let journal = fs::read(&journal_path).unwrap();
+        let staged = fs::read(&report).ok();
+        let old_depfile = fs::read(&depfile).ok();
+        let dry = build().arg("--dry-run").output().unwrap();
+        assert!(!dry.status.success());
+        assert_eq!(fs::read(&journal_path).unwrap(), journal);
+        assert_eq!(fs::read(&report).ok(), staged);
+        assert_eq!(fs::read(&depfile).ok(), old_depfile);
+        assert_code(&build().output().unwrap(), 0);
+        assert!(!journal_path.exists());
+        let result: Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+        assert_eq!(result["schema"], "vex.artifacts");
+        assert!(fs::read_to_string(&depfile).unwrap().contains("vex.ws"));
+    }
+}
+
+#[test]
+fn same_version_different_compiler_bytes_fail_before_dependency_mutation() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+    let plan = plan_object(name);
+    let template = f.command(&plan, &[name]);
+    let original = template
+        .get_envs()
+        .find(|(name, _)| *name == "VEX_WAVEC")
+        .unwrap()
+        .1
+        .unwrap();
+    let prepared = f.root.join(if cfg!(windows) {
+        "prepared.exe"
+    } else {
+        "prepared"
+    });
+    fs::copy(original, &prepared).unwrap();
+    let command = || {
+        let mut c = f.command(&plan, &[name]);
+        c.env("VEX_WAVEC", &prepared);
+        c
+    };
+    assert_code(
+        &command().args(["toolchain", "capture"]).output().unwrap(),
+        0,
+    );
+    let pin = fs::read(f.root.join("vex.toolchain.lock")).unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&prepared)
+        .unwrap()
+        .write_all(b"same version, different build")
+        .unwrap();
+    let output = command().args(["build", "--offline"]).output().unwrap();
+    assert_code(&output, 3);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("compiler_sha256"));
+    assert!(!f.root.join("target").exists());
+    assert!(!f.root.join("vex.lock").exists());
+    assert!(!f.root.join("compiled").exists());
+    assert_eq!(fs::read(f.root.join("vex.toolchain.lock")).unwrap(), pin);
+}
+
+#[test]
+fn absolute_external_outputs_and_private_report_aliases_use_the_same_storage_boundary() {
+    let f = Fixture::new();
+    let build = f.root.join("external build");
+    let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+    // On Windows the compiler receives a normal drive path while the selected
+    // build root is canonical/verbatim. Both denote this exact owned location.
+    let output = build.join(name);
+    let mut plan = plan_object(output.to_str().unwrap());
+    plan["source_inputs"] = json!(["src/lib.wave"]);
+    let first = f
+        .command(&plan, &[name])
+        .arg("--build-dir")
+        .arg(&build)
+        .arg("build")
+        .output()
+        .unwrap();
+    assert_code(&first, 0);
+    assert!(output.is_file());
+    assert!(!f.root.join(name).exists());
+    let before = fs::read(build.join(".vex/build-owner.json")).unwrap();
+    let alias = build.join("absent/../.vex/report.json");
+    let refused = f
+        .command(&plan, &[name])
+        .arg("--build-dir")
+        .arg(&build)
+        .args(["build", "--artifact-manifest"])
+        .arg(alias)
+        .output()
+        .unwrap();
+    assert_code(&refused, 2);
+    assert_eq!(
+        fs::read(build.join(".vex/build-owner.json")).unwrap(),
+        before
+    );
+    assert!(!build.join(".vex/report.json").exists());
+    let other = Fixture::new();
+    let refused = other
+        .command(&plan, &[name])
+        .arg("--build-dir")
+        .arg(&build)
+        .arg("build")
+        .output()
+        .unwrap();
+    assert_code(&refused, 2);
+    assert_eq!(
+        fs::read(build.join(".vex/build-owner.json")).unwrap(),
+        before
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cancelled_rebuild_preserves_completed_artifact_and_consumer_reports() {
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    let name = "target/x86_64-unknown-linux-gnu/dev/lib/app.o";
+    let mut plan = plan_object(name);
+    plan["source_inputs"] = json!(["src/lib.wave"]);
+    let report = f.root.join("artifacts.json");
+    let depfile = f.root.join("artifacts.d");
+    let build = || {
+        let mut c = f.command(&plan, &[name]);
+        c.env("MODERN_CONTRACT", "1")
+            .args(["build", "--artifact-manifest"])
+            .arg(&report)
+            .arg("--depfile")
+            .arg(&depfile);
+        c
+    };
+    assert_code(&build().output().unwrap(), 0);
+    let before = [
+        fs::read(f.root.join(name)).unwrap(),
+        fs::read(&report).unwrap(),
+        fs::read(&depfile).unwrap(),
+    ];
+    fs::write(f.root.join("src/lib.wave"), "fun main() {} // changed\n").unwrap();
+    let marker = f.root.join("staged-ready");
+    let mut child = build()
+        .env("PAUSE_AFTER_OUTPUT", &marker)
+        .env("ARTIFACT_BYTES", "unpublished replacement")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !marker.exists() {
+        if child.try_wait().unwrap().is_some() || Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("compiler did not stage replacement outputs");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(child.wait().unwrap().code(), Some(130));
+    assert_eq!(
+        [
+            fs::read(f.root.join(name)).unwrap(),
+            fs::read(&report).unwrap(),
+            fs::read(&depfile).unwrap()
+        ],
+        before
+    );
+    assert_code(&build().output().unwrap(), 0);
 }

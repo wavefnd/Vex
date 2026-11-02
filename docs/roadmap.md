@@ -1,40 +1,36 @@
-# Vex stabilization roadmap
+# Vex development and release acceptance
 
-Vex `v0.0.2-beta` is published. Its release acceptance covers all nine hosts in
-[platforms.json](../platforms.json), public Wave `0.2.1-pre-beta` artifacts,
-transaction recovery, installation verification and release provenance.
-See [platform validation](../README.md#platform-validation) for the tested
-baselines and the limits of emulated runtime evidence. Every subsequent release
-must pass those same platform gates for its own source commit.
+The public release is `v0.0.2-beta`. The current integration targets
+`v0.0.3-beta`; implementation on a branch is not evidence of a published release.
 
-## Current operational follow-up
+The existing base includes user workspaces, content-verified build reuse, Git
+object sharing/subdirectories, conditional dependency/feature union locks,
+SemVer/aliases, new/add/remove transactions, main-based executable tests,
+cleanup/prune, doctor, tree queries and Meson repository automation. These are
+maintained through their regression suites.
 
-This source branch adds explicit, conservative build cleanup (#49) and unused
-checkout pruning (#88), offline environment diagnosis (#53), quiet/verbose
-output policy (#62), inverse/depth tree queries (#64), and reuse of refs already
-obtained by an initial clone (#43). These changes still require the normal PR
-review and nine-platform CI before being included in a release.
+The v0.0.3 integration covers external build/dependency roots (#177), complete
+depfiles (#178), reusable completed results (#179), library mode/relocation
+(#180), compiler/std content pins (#181), bounded reproducibility (#182),
+last-good artifact generations (#183), a real Meson C/C++/Rust consumer (#184)
+and deterministic static archives (#185). It also addresses #162–174, conditional
+alias removal #186, issue forms #76 and subsystem ownership #83. See
+[the implementation contracts and validation limits](external-builds.md).
 
-Cleanup preserves untracked/legacy state and edited files. Live run generations
-have independent OS leases; there is no automatic GC. Prune defaults to preview
-and requires `--apply` for deletion. Recovery transactions, transaction backups
-and prior compiler installations remain outside deletion scope.
+Full package-scoped multiple-version imports (#58) additionally require the
+separate Wave #1066 contract; logical remapping requires Wave #1067. Existing
+public Wave 0.2.1 acceptance stays required on all nine hosts. New capability
+acceptance must use a verified compatible public Wave release before it becomes
+a mandatory release gate. Local development-compiler or cross-format object
+inspection does not establish native execution support for those new features.
 
-The current target/profile work (#46/#47/#48/#54) adds manifest format 3,
-explicit library and binary targets, unified artifact paths, root profiles and
-exact-triple platform settings. Metadata schema 2 describes these declarations;
-dry-run uses a Vex build-plan envelope. See [the contract](targets-and-profiles.md)
-for compatibility details. Acceptance follows the checks for this source commit.
+The approved test workflow (#60) uses explicit main-based test targets, separate
+test dependencies, deterministic filters, JSONL results and unchanged program
+exit codes. Compiler-native unit-test syntax/harness is not claimed. No registry,
+publish, foreign-source build-script system or automatic garbage collector is
+introduced by this integration.
 
-## Separate designs
-
-User workspaces (#30), shared caches (#29), manifest editing (#28), build
-fingerprints (#59), package version
-ranges (#132/#51), optional dependencies, registry and publish remain separate
-product work. Implemented project discovery, metadata, lockfile v3, source
-credential handling, project leases, isolated run generations and atomic init
-are maintained rather than reimplemented.
-
-Issue closure follows acceptance evidence, not roadmap checkboxes. Build-only
-cross checks do not establish native runtime support, and a compiler schema
-match alone does not establish package-language compatibility.
+Issue completion follows implemented acceptance and test evidence. A release
+requires all nine host reports for its exact commit, including native ABI
+consumers and RISC-V/LoongArch cross-build plus QEMU execution. Historical CI
+results do not validate a later source commit.

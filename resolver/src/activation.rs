@@ -78,6 +78,25 @@ fn selected(
         .cloned()
         .collect()
 }
+fn validate_aliases(
+    edges: &[Edge],
+    packages: &BTreeMap<&str, &LockedPackage>,
+) -> Result<(), Error> {
+    let mut aliases = BTreeMap::new();
+    for edge in edges {
+        let id = identity(packages[edge.key.as_str()]);
+        if aliases
+            .insert(&edge.alias, id.clone())
+            .is_some_and(|before| before != id)
+        {
+            return Err(Error::resolution(format!(
+                "import alias `{}` refers to multiple active package sources in one package",
+                edge.alias
+            )));
+        }
+    }
+    Ok(())
+}
 /// Workspace package qualification is resolved before feature expansion. With
 /// several selected roots, unqualified names would silently affect the wrong
 /// package and are rejected.
@@ -216,9 +235,10 @@ pub(crate) fn select(
             request.selection.include_tests,
         );
         let mut features = BTreeMap::from([(root_identity(root), expanded.features)]);
+        validate_aliases(&root_edges, &packages)?;
         let mut pending: Vec<_> = root_edges.iter().map(|edge| edge.key.clone()).collect();
         let mut seen = BTreeSet::new();
-        let mut aliases = BTreeMap::new();
+
         let mut active = Vec::new();
         while let Some(key) = pending.pop() {
             if !seen.insert(key.clone()) {
@@ -226,19 +246,7 @@ pub(crate) fn select(
             }
             let package = packages[key.as_str()];
             let id = identity(package);
-            let alias = package.import_name();
-            if alias == root.name {
-                return Err(Error::resolution(format!(
-                    "dependency alias `{alias}` conflicts with root package `{}`",
-                    root.name
-                )));
-            }
-            if aliases
-                .insert(alias, id.clone())
-                .is_some_and(|previous| previous != id)
-            {
-                return Err(Error::resolution(format!("import alias `{alias}` refers to multiple active package sources; Wave currently exposes a global import-name map\nhelp: choose distinct aliases; scoped compiler dependency mappings are required for conflicting transitive imports")));
-            }
+            // Cross-package names are scoped; each owner still needs one binding.
             let group = &groups[&id];
             let all_edges = edges(package, &packages);
             let expanded = source::graph::expand(
@@ -250,7 +258,9 @@ pub(crate) fn select(
             .map_err(Error::resolution)?;
             features.insert(id, expanded.features);
             let mut package = package.clone();
-            package.dependencies = selected(&all_edges, &expanded.enabled, context, false)
+            let selected_edges = selected(&all_edges, &expanded.enabled, context, false);
+            validate_aliases(&selected_edges, &packages)?;
+            package.dependencies = selected_edges
                 .into_iter()
                 .map(|e| e.key)
                 .collect::<BTreeSet<_>>()
