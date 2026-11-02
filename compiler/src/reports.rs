@@ -7,7 +7,7 @@ use diagnostic::Error;
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 const OWNERS: &str = ".vex/report-ownership.json";
@@ -288,10 +288,16 @@ pub fn publish(root: &Path, files: &[(PathBuf, String)]) -> Result<(), Error> {
     for (index, (path, text)) in files.iter().enumerate() {
         let staged = generation.join(format!("report-{index}"));
         let batch = state::artifacts::Batch::prepare(root, [staged.clone()]).map_err(error)?;
-        fs::write(&staged, text).map_err(error)?;
-        fs::File::open(&staged)
-            .and_then(|f| f.sync_all())
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
             .map_err(error)?;
+        // Windows requires write access for sync_all (FlushFileBuffers).
+        file.write_all(text.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(error)?;
+        drop(file);
         batch.finish().map_err(error)?;
         let previous = digest(path)?;
         let next = digest(&staged)?;
