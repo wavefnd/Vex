@@ -10,6 +10,9 @@ fn main() {
     if let Ok(path) = env::var("DOCTOR_LOG") {
         writeln!(OpenOptions::new().create(true).append(true).open(path).unwrap(), "{kind}:{}", args.join(" ")).unwrap();
     }
+    if kind == "curl" {
+        std::process::exit(7);
+    }
     if kind == "git" {
         assert_eq!(args, ["--version"], "doctor must never fetch or access a remote");
         println!("git version 2.48.0"); return;

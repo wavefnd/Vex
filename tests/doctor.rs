@@ -664,10 +664,21 @@ fn path_lookup_skips_nonexecutables_but_explicit_selection_is_preserved() {
 #[test]
 fn quiet_setup_suppresses_installation_progress_on_failure() {
     let f = Fixture::new();
+    // Windows searches the application directory before System32 and PATH.
+    // Keep the installer beside its stub so the system curl cannot be used.
+    let vex = f.bin.join(exe("vex"));
+    fs::copy(env!("CARGO_BIN_EXE_vex"), &vex).unwrap();
     fs::copy(fake(), f.bin.join(exe("curl"))).unwrap();
+    let toolchain = f.root.join("toolchain");
     for quiet in [false, true] {
-        let mut command = f.command();
-        command.env("VEX_TOOLCHAIN_HOME", f.root.join("toolchain"));
+        let mut command = Command::new(&vex);
+        command
+            .current_dir(&f.work)
+            .env("PATH", &f.bin)
+            .env("DOCTOR_LOG", f.root.join("calls.log"))
+            .env("VEX_TOOLCHAIN_HOME", &toolchain)
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN");
         if quiet {
             command.arg("--quiet");
         }
@@ -675,15 +686,27 @@ fn quiet_setup_suppresses_installation_progress_on_failure() {
             .args(["setup", "wavec", "--version", "0.2.1-pre-beta"])
             .output()
             .unwrap();
-        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(5), "{stderr}");
+        assert!(
+            stderr.contains("could not query compiler GitHub API"),
+            "{stderr}"
+        );
         assert!(
             output.stdout.is_empty(),
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr).contains("Installing"),
-            !quiet
-        );
+        assert_eq!(stderr.contains("Installing"), !quiet);
+        assert!(!toolchain.exists());
     }
+    let calls = f.calls();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with("curl:"))
+            .count(),
+        2,
+        "{calls}"
+    );
 }
