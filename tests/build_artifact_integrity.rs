@@ -873,3 +873,41 @@ fn cancelled_rebuild_preserves_completed_artifact_and_consumer_reports() {
     );
     assert_code(&build().output().unwrap(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn nonregular_build_owner_is_rejected_without_waiting_for_a_fifo_writer() {
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    let build = f.root.join("external-fifo-owner");
+    fs::create_dir_all(build.join(".vex")).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(build.join(".vex/build-owner.json"))
+        .status()
+        .unwrap()
+        .success());
+    let plan = plan_object("target/x86_64-unknown-linux-gnu/dev/lib/app.o");
+    let mut child = f
+        .command(&plan, &[])
+        .arg("--build-dir")
+        .arg(build)
+        .arg("build")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("opening an invalid storage owner blocked");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!f.root.join("compiled").exists());
+}

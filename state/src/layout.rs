@@ -139,7 +139,7 @@ pub(crate) fn validate_owner(path: &Path, project: &Path, create: bool) -> Resul
         None => serde_json::json!({"native_path_sha256":identity_digest(project)}),
     };
     let identity = serde_json::json!({"schema_version":1,"project":project_identity});
-    match std::fs::File::open(path) {
+    match crate::open_regular(path) {
         Ok(file) => {
             if !file.metadata().map_err(|e| e.to_string())?.is_file() {
                 return Err("storage owner must be a regular file".into());
