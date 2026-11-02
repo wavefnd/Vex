@@ -93,14 +93,18 @@ pub fn build_root(project: &Path) -> PathBuf {
     CURRENT.with(|slot| {
         slot.borrow()
             .as_ref()
-            .filter(|l| l.project == project)
+            .filter(|l| path_form(&l.project) == path_form(project))
             .map_or_else(|| project.into(), |l| l.build.clone())
     })
 }
 pub fn dependency(project: &Path, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     CURRENT.with(|slot| {
-        if let Some(layout) = slot.borrow().as_ref().filter(|l| l.project == project) {
+        if let Some(layout) = slot
+            .borrow()
+            .as_ref()
+            .filter(|l| path_form(&l.project) == path_form(project))
+        {
             if let Ok(tail) = path.strip_prefix(".vex") {
                 return layout.dependencies.join(tail);
             }
@@ -111,14 +115,15 @@ pub fn dependency(project: &Path, path: impl AsRef<Path>) -> PathBuf {
 pub fn output(project: &Path, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     let root = build_root(project);
-    if root == project {
+    if path_form(&root) == path_form(project) {
         path.to_owned()
     } else {
         root.join(path)
     }
 }
 pub fn external(project: &Path) -> bool {
-    build_root(project) != project || dependency(project, ".vex") != project.join(".vex")
+    path_form(&build_root(project)) != path_form(project)
+        || path_form(&dependency(project, ".vex")) != path_form(&project.join(".vex"))
 }
 
 /// Claims only Vex's state, never the surrounding Meson directory or its files.
@@ -148,10 +153,21 @@ pub(crate) fn validate_owner(path: &Path, project: &Path, create: bool) -> Resul
             file.take(65537)
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
-            if bytes.len() > 65536
-                || serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| e.to_string())?
-                    != identity
+            if bytes.len() > 65536 {
+                return Err("storage owner exceeds 64 KiB".into());
+            }
+            let mut stored: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            // Normal and verbatim Windows prefixes identify the same path.
+            // Keep every other ownership field and lexical boundary strict.
+            if let (Some(recorded), Some(expected)) =
+                (stored["project"].as_str(), identity["project"].as_str())
             {
+                if path_form(Path::new(recorded)) == path_form(Path::new(expected)) {
+                    stored["project"] = identity["project"].clone();
+                }
+            }
+            if stored != identity {
                 return Err(
                     "storage directory belongs to a different project or has invalid ownership"
                         .into(),
@@ -270,6 +286,54 @@ pub fn relative_output(root: &Path, path: &Path) -> Result<PathBuf, String> {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+    #[test]
+    fn storage_selection_and_ownership_accept_both_windows_path_forms() {
+        let temporary = std::env::temp_dir().join(format!(
+            "vex-layout-forms-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(temporary.join("source")).unwrap();
+        let project = temporary.join("source").canonicalize().unwrap();
+        let normal = path_form(&project);
+        let build = temporary.join("build");
+        let dependencies = temporary.join("dependencies");
+        {
+            let _scope = configure(&project, Some(&build), Some(&dependencies)).unwrap();
+            assert_eq!(build_root(&normal), build_root(&project));
+            assert_eq!(
+                dependency(&normal, ".vex/deps"),
+                dependency(&project, ".vex/deps")
+            );
+            assert_eq!(
+                output(&normal, "target/app.obj"),
+                output(&project, "target/app.obj")
+            );
+            assert!(external(&normal));
+            prepare_build(&normal).unwrap();
+        }
+        let owner = build.join(".vex/build-owner.json");
+        let before = std::fs::read(&owner).unwrap();
+        {
+            let _scope = configure(&project, Some(&build), Some(&dependencies)).unwrap();
+            prepare_build(&project).unwrap();
+        }
+        assert_eq!(std::fs::read(&owner).unwrap(), before);
+        assert!(configure(&temporary.join("other"), Some(&build), None).is_err());
+        assert_eq!(std::fs::read(&owner).unwrap(), before);
+        {
+            let _scope = configure(&project, None, None).unwrap();
+            assert!(!external(&normal));
+            assert_eq!(
+                output(&normal, "target/app.obj"),
+                Path::new("target/app.obj")
+            );
+        }
+        std::fs::remove_dir_all(temporary).unwrap();
+    }
     #[test]
     fn normal_verbatim_drives_and_unc_paths_have_one_lexical_boundary() {
         assert_eq!(

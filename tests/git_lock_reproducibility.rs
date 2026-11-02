@@ -1149,7 +1149,7 @@ fn unsupported_windows_checkout_directory_preserves_existing_state() {
     create_package(&app, "app", &[("dep", git_url(&dep), None)]);
     assert_success(
         &vex(&app, &["fetch"]),
-        "initial fetch before moving project",
+        "prepare checkout fixture at a supported path",
     );
     let lock = fs::read(app.join("vex.lock")).unwrap();
     let parsed = lockfile::decode(std::str::from_utf8(&lock).unwrap()).unwrap();
@@ -1161,9 +1161,17 @@ fn unsupported_windows_checkout_directory_preserves_existing_state() {
     while deep.as_os_str().len() < 175 {
         deep.push("nested project directory");
     }
-    fs::create_dir_all(&deep).unwrap();
     deep.push("app");
-    fs::rename(&app, &deep).unwrap();
+    // Prepare ownership at the final source root. Moving the whole prepared
+    // project would fail the source-identity guard before reaching Git's path
+    // limit. Seed only the lock and checkout to test preservation at that limit.
+    create_package(&deep, "app", &[]);
+    assert_success(&vex(&deep, &["fetch", "--offline"]), "prepare deep store");
+    create_package(&deep, "app", &[("dep", git_url(&dep), None)]);
+    fs::write(deep.join("vex.lock"), &lock).unwrap();
+    fs::create_dir_all(deep.join(resolved).parent().unwrap()).unwrap();
+    fs::rename(app.join(resolved), deep.join(resolved)).unwrap();
+    let owner = fs::read(deep.join(".vex/store-owner.json")).unwrap();
     let output = vex(&deep, &["update", "dep"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(5), "{stderr}");
@@ -1173,6 +1181,7 @@ fn unsupported_windows_checkout_directory_preserves_existing_state() {
     );
     assert!(!stderr.contains("Cloning"), "{stderr}");
     assert_eq!(fs::read(deep.join("vex.lock")).unwrap(), lock);
+    assert_eq!(fs::read(deep.join(".vex/store-owner.json")).unwrap(), owner);
     assert_eq!(
         fs::read(deep.join(resolved).join("src/lib.wave")).unwrap(),
         source

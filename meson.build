@@ -69,7 +69,7 @@ if get_option('test_target') != ''
     test_args = ['--target', get_option('test_target')]
 endif
 python_tests = ['-m', 'unittest', 'discover', '-s', 'tests/tooling', '-v']
-rust_tests = cargo + ['test', '--workspace', '--locked'] + test_args
+rust_tests = cargo + ['test', '--workspace', '--locked', '--no-fail-fast'] + test_args
 test(
     'tooling',
     python,
@@ -82,11 +82,7 @@ test(
 test(
     'rust',
     python,
-    args: [files('tools/automation_step.py')[0].full_path(), '--'] + cargo + [
-        'test',
-        '--workspace',
-        '--locked',
-    ] + test_args,
+    args: [files('tools/automation_step.py')[0].full_path(), '--'] + rust_tests,
     workdir: meson.project_source_root(),
     suite: 'rust',
     timeout: 7200,

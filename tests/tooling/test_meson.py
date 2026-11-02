@@ -130,6 +130,7 @@ if os.environ.get('VEX_MESON_TEST_FAIL') in sys.argv[1:]:
         self.run_meson('compile', '-C', 'build', 'check')
         self.assertTrue((self.root / 'tooling-marker').is_file())
         self.assertEqual([call['args'][0] for call in self.calls()], ['fmt', 'test', 'clippy', 'build'])
+        self.assertIn('--no-fail-fast', self.calls()[1]['args'])
         for call in self.calls()[1:]:
             self.assertIn('--workspace', call['args'])
             self.assertIn('--locked', call['args'])
