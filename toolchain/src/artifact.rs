@@ -809,6 +809,9 @@ mod tests {
                 assert!(Instant::now() < deadline, "download test server timed out");
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Windows inherits the listener's nonblocking mode.
+                        // The accepted connection uses blocking I/O with deadlines.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(5)))
                             .unwrap();
@@ -856,6 +859,35 @@ mod tests {
     const PARTIAL_ARCHIVE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial response longer than final archive";
     const COMPLETE_ARCHIVE: &[u8] =
         b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\narchive";
+
+    #[test]
+    fn download_test_server_waits_for_delayed_request_headers() {
+        use std::net::TcpStream;
+        let (response, requests) = with_http_server(vec![COMPLETE_ARCHIVE], |url| {
+            let address = url
+                .strip_prefix("http://")
+                .unwrap()
+                .strip_suffix("/archive")
+                .unwrap();
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // Accept the connection before sending any bytes, then split the
+            // header terminator to exercise waits after both accept and read.
+            std::thread::sleep(Duration::from_millis(100));
+            client
+                .write_all(b"GET /archive HTTP/1.1\r\nHost: localhost\r\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            client.write_all(b"\r\n").unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            response
+        });
+        assert_eq!(response, COMPLETE_ARCHIVE);
+        assert_eq!(requests, 1);
+    }
 
     #[test]
     fn interrupted_archive_download_restarts_without_partial_bytes() {
